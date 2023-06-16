@@ -105,15 +105,19 @@ class ResolveUIDDeserializerBase:
         self.context = context
         self.request = request
 
+    def __call__(self, block):
+        # Convert absolute links to resolveuid
+        return self._process_data(block)
+
     def _process_data(self, data, field=None):
         if isinstance(data, str) and field in self.fields:
             return path2uid(context=self.context, link=data)
-            # data[field] = path2uid(context=self.context, link=data)
-        elif data and isinstance(data, list):
+        if isinstance(data, list):
             return [self._process_data(data=value, field=field) for value in data]
-        elif isinstance(data, dict):
-            # Detect if it has an object inside with an "@id" key (object_widget)
-            if "@id" in data:
+        if isinstance(data, dict):
+            if data.get("@type", None) == "URL" and data.get("value", None):
+                data["value"] = path2uid(context=self.context, link=data["value"])
+            elif data.get("@id", None):
                 item_clone = deepcopy(data)
                 item_clone["@id"] = path2uid(
                     context=self.context, link=item_clone["@id"]
@@ -126,12 +130,7 @@ class ResolveUIDDeserializerBase:
                 field: self._process_data(data=value, field=field)
                 for field, value in data.items()
             }
-
         return data
-
-    def __call__(self, block):
-        # Convert absolute links to resolveuid
-        return self._process_data(data=block)
 
 
 class TextBlockDeserializerBase:
@@ -166,7 +165,6 @@ class HTMLBlockDeserializerBase:
         self.request = request
 
     def __call__(self, block):
-
         portal_transforms = api.portal.get_tool(name="portal_transforms")
         raw_html = block.get("html", "")
         data = portal_transforms.convertTo(
@@ -305,7 +303,6 @@ class SlateBlockDeserializerRoot(SlateBlockDeserializerBase):
 
 class SlateTableBlockTransformer(SlateBlockTransformer):
     def __call__(self, block):
-
         rows = block.get("table", {}).get("rows", [])
         for row in rows:
             cells = row.get("cells", [])
