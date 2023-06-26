@@ -27,11 +27,11 @@ from zope.schema.interfaces import ITextLine
 from zope.schema.interfaces import ITime
 from zope.schema.interfaces import ITimedelta
 from zope.schema.interfaces import IVocabularyTokenized
+from ZODB.blob import rename_or_copy_blob
 
 import codecs
 import dateutil
 import html as html_parser
-import os
 
 
 @implementer(IFieldDeserializer)
@@ -260,7 +260,7 @@ class NamedFieldDeserializer(DefaultFieldDeserializer):
             content_type = value.metadata().get("content-type", content_type)
             filename = value.metadata().get("filename", filename)
             # Put an single byte in place. Blob file is moved below.
-            data = b'0'
+            data = b"0"
             tus_filepath = value.filepath
         else:
             data = value
@@ -273,13 +273,10 @@ class NamedFieldDeserializer(DefaultFieldDeserializer):
             value = None
 
         # If it si a TUS upload, we rename the temporary file to the temp blob
-        # file. If the two files are on the same disk volume this will be a 
+        # file. If the two files are on the same disk volume this will be a
         # very quick operation
         if tus_filepath:
-            try:
-                os.rename(tus_filepath, value._blob._p_blob_uncommitted)
-            except OSError:
-                os.copy(tus_filepath, value._blob._p_blob_uncommitted)
+            rename_or_copy_blob(tus_filepath, value._blob._p_blob_uncommitted)
 
         # Always validate to check for required fields
         self.field.validate(value)
