@@ -7,6 +7,7 @@ from plone.app.discussion.interfaces import IConversation
 from plone.app.discussion.interfaces import IDiscussionSettings
 from plone.app.discussion.interfaces import IReplies
 from plone.app.multilingual.interfaces import ITranslationManager
+from plone.app.testing import applyProfile
 from plone.app.testing import setRoles
 from plone.app.testing import SITE_OWNER_NAME
 from plone.app.testing import SITE_OWNER_PASSWORD
@@ -35,6 +36,7 @@ from plone.app.testing import popGlobalRegistry
 from plone.app.testing import pushGlobalRegistry
 from plone.restapi.testing import register_static_uuid_utility
 from zope.component.hooks import getSite
+
 import collections
 import json
 import os
@@ -213,7 +215,6 @@ class TestDocumentationBase(unittest.TestCase):
 
 
 class TestDocumentation(TestDocumentationBase):
-
     layer = PLONE_RESTAPI_DX_FUNCTIONAL_TESTING
 
     def setUp(self):
@@ -1106,6 +1107,48 @@ class TestDocumentation(TestDocumentationBase):
         response = self.api_session.delete("/@users/noam")
         save_request_and_response_for_docs("users_delete", response)
 
+    def test_documentation_users_delete_no_localroles(self):
+        properties = {
+            "email": "noam.chomsky@example.com",
+            "username": "noamchomsky",
+            "fullname": "Noam Avram Chomsky",
+            "home_page": "web.mit.edu/chomsky",
+            "description": "Professor of Linguistics",
+            "location": "Cambridge, MA",
+        }
+        api.user.create(
+            email="noam.chomsky@example.com",
+            username="noam",
+            properties=properties,
+        )
+        transaction.commit()
+
+        response = self.api_session.delete(
+            "/@users/noam", data={"delete_localroles": 0}
+        )
+        save_request_and_response_for_docs("users_delete_no_localroles", response)
+
+    def test_documentation_users_delete_no_memberareas(self):
+        properties = {
+            "email": "noam.chomsky@example.com",
+            "username": "noamchomsky",
+            "fullname": "Noam Avram Chomsky",
+            "home_page": "web.mit.edu/chomsky",
+            "description": "Professor of Linguistics",
+            "location": "Cambridge, MA",
+        }
+        api.user.create(
+            email="noam.chomsky@example.com",
+            username="noam",
+            properties=properties,
+        )
+        transaction.commit()
+
+        response = self.api_session.delete(
+            "/@users/noam", data={"delete_memberareas": 0}
+        )
+        save_request_and_response_for_docs("users_delete_no_memberareas", response)
+
     def test_documentation_groups(self):
         gtool = api.portal.get_tool("portal_groups")
         properties = {
@@ -1746,7 +1789,6 @@ class TestDocumentation(TestDocumentationBase):
 
 
 class TestDocumentationMessageTranslations(TestDocumentationBase):
-
     layer = PLONE_RESTAPI_DX_FUNCTIONAL_TESTING
 
     def setUp(self):
@@ -1803,7 +1845,6 @@ class TestDocumentationMessageTranslations(TestDocumentationBase):
 
 
 class TestCommenting(TestDocumentationBase):
-
     layer = PLONE_RESTAPI_DX_FUNCTIONAL_TESTING
 
     def setUp(self):
@@ -2072,7 +2113,6 @@ class TestCommenting(TestDocumentationBase):
 
 
 class TestControlPanelDocumentation(TestDocumentationBase):
-
     layer = PLONE_RESTAPI_DX_FUNCTIONAL_TESTING
 
     def test_controlpanels_get_listing(self):
@@ -2130,13 +2170,20 @@ class TestControlPanelDocumentation(TestDocumentationBase):
 
 
 class TestPAMDocumentation(TestDocumentationBase):
-
     layer = PLONE_RESTAPI_DX_PAM_FUNCTIONAL_TESTING
 
     def setUp(self):
         super().setUp()
 
-        #
+        language_tool = api.portal.get_tool("portal_languages")
+        language_tool.addSupportedLanguage("en")
+        language_tool.addSupportedLanguage("es")
+        language_tool.addSupportedLanguage("de")
+        if api.portal.get().portal_setup.profileExists(
+            "plone.app.multilingual:default"
+        ):
+            applyProfile(self.portal, "plone.app.multilingual:default")
+
         # We manually set the UIDs for LRFs here because the static uuid
         # generator is not applied for LRFs.
         # When we have tried to apply it for LRFs we have had several
@@ -2220,6 +2267,22 @@ class TestPAMDocumentation(TestDocumentationBase):
         )
         save_request_and_response_for_docs("translation_locator", response)
 
+    def test_documentation_translations_unexpanded_get(self):
+        response = self.api_session.get(
+            f"{self.en_content.absolute_url()}",
+        )
+        save_request_and_response_for_docs("translations_unexpanded_get", response)
+
+    def test_documentation_translations_expand_get(self):
+        self.api_session.post(
+            f"{self.en_content.absolute_url()}/@translations",
+            json={"id": self.es_content.absolute_url()},
+        )
+        response = self.api_session.get(
+            f"{self.en_content.absolute_url()}?expand=translations",
+        )
+        save_request_and_response_for_docs("translations_expand_get", response)
+
     def test_site_navroot_get(self):
         response = self.api_session.get("/@navroot")
         save_request_and_response_for_docs("navroot_site_get", response)
@@ -2248,7 +2311,6 @@ class TestPAMDocumentation(TestDocumentationBase):
 
 
 class TestIterateDocumentation(TestDocumentationBase):
-
     layer = PLONE_RESTAPI_ITERATE_FUNCTIONAL_TESTING
 
     def setUp(self):
@@ -2352,7 +2414,6 @@ class TestIterateDocumentation(TestDocumentationBase):
 
 
 class TestRules(TestDocumentationBase):
-
     layer = PLONE_RESTAPI_DX_FUNCTIONAL_TESTING
 
     def setUp(self):

@@ -8,6 +8,138 @@ Changelog
 
 .. towncrier release notes start
 
+8.43.3 (2023-09-21)
+-------------------
+
+Bug fixes:
+
+
+- Fix stored XSS (Cross Site Scripting) for SVG image in user portrait.
+  Done by forcing a download instead of displaying inline.
+  Normal accessing via an image tag is not affected and is safe.
+  See `security advisory <https://github.com/plone/plone.restapi/security/advisories/GHSA-hc5c-r8m5-2gfh>`_.
+  [maurits] (#1)
+
+
+8.43.2 (2023-09-14)
+-------------------
+
+Bug fixes:
+
+
+- Make new release to add missing changelog entries for 8.43.1.
+  [maurits] (#8431)
+
+
+8.43.1 (2023-08-25)
+-------------------
+
+Bug fixes:
+
+
+- Use incoming request to produce location for @tus-upload
+  [instification] (#1570)
+
+
+Documentation:
+
+
+- Added translation code through expansion. @Akshat2Jain (#1374)
+- Restores formatting and fixes some MyST syntax from #1689. @stevepiercy (#1691)
+- Documentation fixes for #1599. @stevepiercy (#1692)
+- Fix linkcheckbroken 301 redirect to https://www.4teamwork.ch/en. @stevepiercy (#1693)
+
+
+8.43.0 (2023-08-23)
+-------------------
+
+New features:
+
+
+- Allow passing additional parameters to the delete users endpoint to request not to delete local roles and memberareas
+  [erral] (#1598)
+
+
+8.42.1 (2023-08-23)
+-------------------
+
+Bug fixes:
+
+
+- Fix broken relations info. @ksuess (#1673)
+
+
+Internal:
+
+
+- Fix test cleanup. @davisagli (#1680)
+
+
+Documentation:
+
+
+- Move expansion docs from endpoints to usage, and add a list of all expandable components. Fixes #1677. @stevepiercy (#1678)
+
+
+8.42.0 (2023-07-17)
+-------------------
+
+New features:
+
+
+- When serializing blocks, `image_scales` is now added to blocks that contain a resolveuid-based `url`.
+  When deserializing blocks, `image_scales` is removed. @davisagli (#1642)
+
+
+Bug fixes:
+
+
+- Remove the hard code dependency by plone.app.multilingual, use it conditionaly instead
+  [@folix-01] (#1639)
+- Fix timezone of dates for revisions in the `@history` service. @davisagli (#1647)
+- Fix types expander in root for Plone 5.2 (for non-Dexterity Plone Site Root) @sneridagh (#1669)
+
+
+Internal:
+
+
+- Updated package installation to use constraints.txt for black package, ensuring compatibility and consistent versions. @Akshat2Jain (#1671)
+- Update Makefile and buildout to use Plone 6.0.6. @davisagli (#1672)
+
+
+Documentation:
+
+
+- added instruction to ensure consistent code formatting. @Akshat2Jain (#1664)
+
+
+8.41.0 (2023-06-29)
+-------------------
+
+New features:
+
+
+- Add `visit_blocks` util for finding all nested blocks. @davisagli (#1648)
+
+
+Bug fixes:
+
+
+- Fix path2uid method, to handle suffix with non-traversable objects. @cekk @mamico (#1649)
+
+
+Internal:
+
+
+- Allow GHA tests to run on PRs from forks. @Akshat2Jain (#1656)
+
+
+Documentation:
+
+
+- Fix html_meta tags, and remove stray spaces that prevented the glossary from rendering. @stevepiercy (#1663)
+
+
 8.40.0 (2023-06-06)
 -------------------
 
