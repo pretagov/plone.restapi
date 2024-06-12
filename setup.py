@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-version = '1.0a12.exportfix.dev0'
+version = '2.0a2'
 
 long_description = (
     open('README.rst').read() + '\n' +

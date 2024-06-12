@@ -25,9 +25,11 @@ class DefaultJSONSummarySerializer(object):
         obj = IContentListingObject(self.context)
         title = obj.id
         try:
-            title = obj.getTitle()
+            title = obj.Title()
         except TypeError:
-            title = obj.title
+            title = obj.Title
+        except AttributeError:
+            title = obj.id
         summary = json_compatible({
             '@id': obj.getURL(),
             '@type': obj.PortalType(),
