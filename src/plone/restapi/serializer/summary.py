@@ -23,10 +23,15 @@ class DefaultJSONSummarySerializer(object):
 
     def __call__(self):
         obj = IContentListingObject(self.context)
+        title = obj.id
+        try:
+            title = obj.getTitle()
+        except TypeError:
+            title = obj.title
         summary = json_compatible({
             '@id': obj.getURL(),
             '@type': obj.PortalType(),
-            'title': obj.Title(),
+            'title': title,
             'description': obj.Description(),
             'review_state': obj.review_state()
         })
