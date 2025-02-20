@@ -18,7 +18,10 @@
   <include package=".controlpanels" />
   <include package=".copymove" />
   <include package=".database" />
-  <include package=".discussion" />
+  <include
+      package=".discussion"
+      zcml:condition="installed plone.app.discussion"
+      />
   <include package=".groups" />
   <include package=".navigation" />
   <include package=".contextnavigation" />
@@ -58,10 +61,6 @@
   <include
       package=".email_send"
       zcml:condition="have plone-5"
-      />
-  <include
-      package=".tiles"
-      zcml:condition="installed plone.tiles"
       />
   <include
       package=".rules"

@@ -7,6 +7,7 @@ from plone.namedfile.browser import DISALLOWED_INLINE_MIMETYPES
 from plone.namedfile.browser import USE_DENYLIST
 from plone.namedfile.utils import stream_data
 from plone.restapi.interfaces import ISerializeToJson
+from plone.restapi.permissions import PloneManageUsers
 from plone.restapi.services import Service
 from Products.CMFCore.utils import getToolByName
 from Products.CMFPlone.utils import normalizeString
@@ -26,6 +27,31 @@ from zope.publisher.interfaces import IPublishTraverse
 
 
 DEFAULT_SEARCH_RESULTS_LIMIT = 25
+
+try:
+    # Zope 5.8.4+
+    from OFS.Image import extract_media_type as _extract_media_type
+except ImportError:
+    try:
+        from plone.namedfile.utils import extract_media_type as _extract_media_type
+    except ImportError:
+        # Note that we start the method with an underscore, to signal that this
+        # is a private implementation detail and no one should be importing this.
+
+        def _extract_media_type(content_type):
+            """extract the proper media type from *content_type*.
+
+            Ignore parameters and whitespace and normalize to lower case.
+            See https://github.com/zopefoundation/Zope/pull/1167
+            """
+            if not content_type:
+                return content_type
+            # ignore parameters
+            content_type = content_type.split(";", 1)[0]
+            # ignore whitespace
+            content_type = "".join(content_type.split())
+            # normalize to lowercase
+            return content_type.lower()
 
 
 def getPortraitUrl(user):
@@ -84,13 +110,14 @@ class UsersGet(Service):
     def _principal_search_results(
         self, search_for_principal, get_principal_by_id, principal_type, id_key
     ):
-
         hunter = getMultiAdapter((self.context, self.request), name="pas_search")
 
         principals = []
         for principal_info in search_for_principal(hunter, self.search_term):
             principal_id = principal_info[id_key]
-            principals.append(get_principal_by_id(principal_id))
+            principal = get_principal_by_id(principal_id)
+            if principal is not None:
+                principals.append(principal)
 
         return principals
 
@@ -153,11 +180,11 @@ class UsersGet(Service):
 
     def has_permission_to_query(self):
         sm = getSecurityManager()
-        return sm.checkPermission("Manage portal", self.context)
+        return sm.checkPermission(PloneManageUsers, self.context)
 
     def has_permission_to_enumerate(self):
         sm = getSecurityManager()
-        return sm.checkPermission("Manage portal", self.context)
+        return sm.checkPermission(PloneManageUsers, self.context)
 
     def has_permission_to_access_user_info(self):
         sm = getSecurityManager()
@@ -209,7 +236,6 @@ class UsersGet(Service):
         if self.has_permission_to_access_user_info() or (
             current_user_id and current_user_id == self._get_user_id
         ):
-
             # we retrieve the user on the user id not the username
             user = self._get_user(self._get_user_id)
             if not user:
@@ -251,7 +277,7 @@ class PortraitGet(Service):
 
     def _should_force_download(self, portrait):
         # If this returns True, the caller should set the Content-Disposition header.
-        mimetype = portrait.content_type
+        mimetype = _extract_media_type(portrait.content_type)
         if not mimetype:
             return False
         if self.use_denylist:

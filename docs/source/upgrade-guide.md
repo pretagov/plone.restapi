@@ -12,6 +12,57 @@ myst:
 This upgrade guide lists all breaking changes in `plone.restapi`.
 It explains the steps that are needed to upgrade to the latest version.
 
+## Upgrading to `plone.restapi` 9.x
+
+`plone.restapi` 9.x dropped support for Python 3.7, which reached its `end-of-life <https://devguide.python.org/versions/>`_ in July 2023.
+
+Upgrading to `plone.restapi` 9.x might require minor changes to your code base that are described in this section. If you are using a recent version of Volto, there are no changes necessary.
+
+### Link Integrity
+
+When calling the @linkintegrity endpoint in `plone.restapi` before 9.0.0, a content object with no link integrity breaches would return just an empty list in the response body:
+
+`[]`
+
+In `plone.restapi` 9.0.0, the following response would be returned with a `breaches` attribute with an empty list:
+
+```
+[
+    {
+        "@id": "http://localhost:55001/plone/doc-2",
+        "@type": "Document",
+        "breaches": [],
+        "description": "",
+        "items_total": 0,
+        "review_state": "private",
+        "title": "Second document",
+        "type_title": "Page"
+    }
+]
+```
+
+Pull Request: https://github.com/plone/plone.restapi/pull/1636
+
+
+### Remove deprecated `@unlock`, `@refresh-lock` endpoints
+
+The deprecated `@unlock` and `@refresh-unlock` endpoints were removed in `plone.restapi` 9.
+
+Send a `DELETE` request to the `@lock` endpoint to release a lock (replaces the `@unlock` endpoint).
+
+Send a `PATCH` request to the `@lock` endpoint to refresh a lock (replaces the `@refresh-unlock` endpoint).
+
+See the documentation of the `@lock`endpoint for more information: https://plonerestapi.readthedocs.io/en/latest/endpoints/locking.html
+
+Pull Request: https://github.com/plone/plone.restapi/pull/1235
+
+
+### Remove `plone.tiles` and the `@tiles` endpoint
+
+`plone.restapi` 9 removed the `@tiles` endpoint and removed the dependency to `plone.tiles`. The `@tiles` endpoint was deprecated since `plone.restapi` 8.
+
+Pull Request: https://github.com/plone/plone.restapi/pull/1688
+
 ## Upgrading to `plone.restapi` 8.x
 
 `plone.restapi` 8.x dropped support for Python 2 and Plone 5.1 and 4.3.

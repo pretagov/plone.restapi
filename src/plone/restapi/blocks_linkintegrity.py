@@ -57,7 +57,6 @@ class TextBlockLinksRetriever(object):
 @adapter(IBlocks, IBrowserRequest)
 @implementer(IBlockFieldLinkIntegrityRetriever)
 class SlateBlockLinksRetriever:
-
     order = 100
     block_type = "slate"
     field = "value"
@@ -70,9 +69,8 @@ class SlateBlockLinksRetriever:
     def __call__(self, block):
         value = (block or {}).get(self.field, [])
         children = iterate_children(value or [])
-
         for child in children:
-            node_type = child.get("type")
+            node_type = child.get("type", "")
             if node_type:
                 handler = getattr(self, f"handle_{node_type}", None)
                 if handler:
@@ -111,7 +109,7 @@ class GenericBlockLinksRetriever(object):
         Returns a list of internal links
         """
         links = []
-        for field in ["url", "href"]:
+        for field in ["url", "href", "preview_image"]:
             value = block.get(field, "")
             for url in get_urls_from_value(value):
                 links.append(url)

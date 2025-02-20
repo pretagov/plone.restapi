@@ -1,14 +1,14 @@
-from plone.dexterity.schema import lookup_fti
 from plone.app.uuid.utils import uuidToCatalogBrain
+from plone.dexterity.schema import lookup_fti
 from plone.restapi.interfaces import IObjectPrimaryFieldTarget
 from zope.component import queryMultiAdapter
-from zope.i18n import translate
 from zope.globalrequest import getRequest
+from zope.i18n import translate
 
 import re
 
 
-RESOLVEUID_RE = re.compile("^[./]*resolve[Uu]id/([^/]*)/?(.*)$")
+RESOLVEUID_RE = re.compile("^(?:|.*/)resolve[Uu]id/([^/#]*)?(.*)?$")
 
 
 def resolve_uid(path):
@@ -29,7 +29,7 @@ def resolve_uid(path):
         return path, None
     href = brain.getURL()
     if suffix:
-        return href + "/" + suffix, brain
+        return href + suffix, brain
     target_object = brain._unrestrictedGetObject()
     adapter = queryMultiAdapter(
         (target_object, target_object.REQUEST),
@@ -43,7 +43,7 @@ def resolve_uid(path):
 
 
 def uid_to_url(path):
-    path, brain = resolve_uid(path)
+    path, _brain = resolve_uid(path)
     return path
 
 

@@ -24,9 +24,10 @@ def iterate_children(value):
     queue = deque(value)
     while queue:
         child = queue.pop()
-        yield child
-        if child.get("children"):
-            queue.extend(child["children"] or [])
+        if isinstance(child, dict):
+            yield child
+            if child.get("children", []):
+                queue.extend(child["children"] or [])
 
 
 @implementer(IFieldDeserializer)
@@ -55,7 +56,7 @@ class ResolveUIDDeserializerBase:
 
     order = 1
     block_type = None
-    fields = ["url", "href"]
+    fields = ["url", "href", "preview_image"]
     disabled = os.environ.get("disable_transform_resolveuid", False)
 
     def __init__(self, context, request):

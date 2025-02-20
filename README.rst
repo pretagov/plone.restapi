@@ -1,8 +1,8 @@
-.. image:: https://github.com/plone/plone.restapi/actions/workflows/tests.yml/badge.svg?branch=master
+.. image:: https://github.com/plone/plone.restapi/actions/workflows/tests.yml/badge.svg?branch=main
   :target: https://github.com/plone/plone.restapi/actions/workflows/tests.yml
 
-.. image:: https://coveralls.io/repos/github/plone/plone.restapi/badge.svg?branch=master
-  :target: https://coveralls.io/github/plone/plone.restapi?branch=master
+.. image:: https://coveralls.io/repos/github/plone/plone.restapi/badge.svg?branch=main
+  :target: https://coveralls.io/github/plone/plone.restapi?branch=main
 
 .. image:: https://readthedocs.org/projects/pip/badge
   :target: https://plonerestapi.readthedocs.io/en/latest/
@@ -74,12 +74,13 @@ Install ``plone.restapi`` by adding it to your buildout.
 Python / Plone Compatibility
 ============================
 
-plone.restapi 8 requires Python 3 and works with Plone 5.2 and Plone 6.x.
+plone.restapi 9 requires Python 3 and works with Plone 5.2 and Plone 6.x.
 
-plone.restapi 8 does not officially support Python 3.6.
+plone.restapi 8 entered "maintenance" mode with the release of plone.restapi 9 (September 2023).
+It is not planned to backport any features to this version and we highly recommend to upgrade to plone.restapi 9.
 
 Python versions that reached their `end-of-life <https://devguide.python.org/versions/>`_,
-including Python 3.6, might still work, but the maintainers do not guarantee this in any way.
+including Python 3.6 and Python 3.7 are not supported any longer.
 
 Use plone.restapi 7 if you are running Python 2.7 or Plone versions below 5.2.
 
@@ -101,7 +102,6 @@ It can be seen in action at the following sites:
 - Zeelandia GmbH & Co. KG: https://www.zeelandia.de (by kitconcept GmbH)
 - VHS-Ehrenamtsportal: https://vhs-ehrenamtsportal.de (by kitconcept GmbH)
 - German Physical Society: https://www.dpg-physik.de (by kitconcept GmbH)
-- Universitat Politècnica de Catalunya: https://www.upc.edu/en (by kitconcept GmbH)
 
 
 Support
