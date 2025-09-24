@@ -31,7 +31,6 @@ from zope.schema.interfaces import IVocabularyTokenized
 
 import codecs
 import dateutil
-
 import html as html_parser
 
 
@@ -125,12 +124,17 @@ class DatetimeFieldDeserializer(DefaultFieldDeserializer):
             dm = queryMultiAdapter((self.context, self.field), IDataManager)
             current = dm.get()
             if current is not None:
-                # Timezone-aware. Convert to the same timezone.
-                tz = timezone(current.tzinfo.zone)
-                value = tz.normalize(dt.astimezone(tz))
+                # There's an existing value. Let's match it.
+                if current.tzinfo is not None:
+                    # Timezone-aware. Convert to the same timezone.
+                    tz = timezone(current.tzinfo.zone)
+                    value = tz.normalize(dt.astimezone(tz))
+                else:
+                    # Timezone-naive. Convert to UTC and remove the tzinfo.
+                    value = utc.normalize(dt.astimezone(utc)).replace(tzinfo=None)
             else:
-                # Timezone-naive. Convert to UTC and remove the tzinfo.
-                value = utc.normalize(dt.astimezone(utc)).replace(tzinfo=None)
+                # No current value. Store as timezone-aware.
+                value = dt
 
         self.field.validate(value)
         return value
