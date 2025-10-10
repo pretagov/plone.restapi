@@ -6,11 +6,14 @@ from plone.restapi.deserializer.blocks import SlateBlockTransformer
 from plone.restapi.deserializer.blocks import transform_links
 from plone.restapi.interfaces import IBlockFieldSerializationTransformer
 from plone.restapi.interfaces import IFieldSerializer
+from plone.restapi.interfaces import ISerializeToJsonSummary
 from plone.restapi.serializer.converters import json_compatible
 from plone.restapi.serializer.dxfields import DefaultFieldSerializer
 from plone.restapi.serializer.utils import resolve_uid, uid_to_url
 from plone.schema import IJSONField
+from zope.annotation.interfaces import IAnnotations
 from zope.component import adapter
+from zope.component import getMultiAdapter
 from zope.interface import implementer
 from zope.interface import Interface
 from zope.publisher.interfaces.browser import IBrowserRequest
@@ -52,7 +55,17 @@ class ResolveUIDSerializerBase:
 
     def _process_data(self, data, field=None):
         if isinstance(data, str) and field in self.fields:
-            return uid_to_url(data)
+            resolved_uid, brain = resolve_uid(data)
+            annotations = IAnnotations(self.request)
+            summary_serializer = getMultiAdapter(
+                (brain, self.request), ISerializeToJsonSummary
+            )
+            if summary_serializer:
+                summary = summary_serializer()
+                annotations["plone.restapi.serializer.blocks.resolved_objects"][
+                    resolved_uid
+                ] = summary
+            return resolved_uid
         if isinstance(data, list):
             return [self._process_data(data=value, field=field) for value in data]
         if isinstance(data, dict):
@@ -66,6 +79,18 @@ class ResolveUIDSerializerBase:
                 newdata[field], brain = resolve_uid(data[field])
                 if brain is not None and "image_scales" not in newdata:
                     newdata["image_scales"] = getattr(brain, "image_scales", None)
+
+                if newdata[field] != data[field]:
+                    annotations = IAnnotations(self.request)
+                    summary_serializer = getMultiAdapter(
+                        (brain, self.request), ISerializeToJsonSummary
+                    )
+                    if summary_serializer:
+                        summary = summary_serializer()
+                        annotations["plone.restapi.serializer.blocks.resolved_objects"][
+                            newdata[field]
+                        ] = summary
+
             result = {
                 field: (
                     newdata[field]
