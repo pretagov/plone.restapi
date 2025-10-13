@@ -124,7 +124,6 @@ class SerializeToJson:
                 value = serializer()
                 result[json_compatible(name)] = value
 
-        annotations = IAnnotations(self.request)
         resolved_objects = annotations["plone.restapi.serializer.blocks.resolved_objects"]
         result['mapping'] = resolved_objects
 
