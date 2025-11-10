@@ -21,6 +21,7 @@ from plone.rfc822.interfaces import IPrimaryFieldInfo
 from plone.supermodel.utils import mergedTaggedValueDict
 from Products.CMFCore.utils import getToolByName
 from Products.CMFPlone.utils import base_hasattr
+from zope.annotation.interfaces import IAnnotations
 from zope.component import adapter
 from zope.component import getMultiAdapter
 from zope.component import queryMultiAdapter
@@ -104,6 +105,10 @@ class SerializeToJson:
         # Insert expandable elements
         result.update(expandable_elements(self.context, self.request))
 
+        # Start a key to map data about all resolved UID objects
+        annotations = IAnnotations(self.request)
+        annotations["plone.restapi.serializer.blocks.resolved_objects"] = {}
+
         # Insert field values
         for schema in iterSchemata(self.context):
             read_permissions = mergedTaggedValueDict(schema, READ_PERMISSIONS_KEY)
@@ -118,6 +123,9 @@ class SerializeToJson:
                 )
                 value = serializer()
                 result[json_compatible(name)] = value
+
+        resolved_objects = annotations["plone.restapi.serializer.blocks.resolved_objects"]
+        result['resolved_uids'] = resolved_objects
 
         target_url = getMultiAdapter(
             (self.context, self.request), IObjectPrimaryFieldTarget

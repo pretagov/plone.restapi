@@ -38,7 +38,7 @@ def resolve_uid(path):
     if adapter:
         a_href = adapter()
         if a_href:
-            return a_href, None
+            return a_href, brain
     return href, brain
 
 

@@ -15,6 +15,7 @@ from plone.restapi.services.locking import lock_info
 from plone.restapi.serializer.utils import get_portal_type_title
 from plone.supermodel.utils import mergedTaggedValueDict
 from Products.CMFCore.utils import getToolByName
+from zope.annotation.interfaces import IAnnotations
 from zope.component import adapter
 from zope.component import getMultiAdapter
 from zope.component import queryMultiAdapter
@@ -71,6 +72,10 @@ class SerializeSiteRootToJson:
             "description": self.context.description,
         }
 
+        # Start a key to map data about all resolved UID objects
+        annotations = IAnnotations(self.request)
+        annotations["plone.restapi.serializer.blocks.resolved_objects"] = {}
+
         if HAS_PLONE_6:
             result["UID"] = self.context.UID()
             # Insert review_state
@@ -108,6 +113,9 @@ class SerializeSiteRootToJson:
                     ),
                 }
             )
+
+        resolved_objects = annotations["plone.restapi.serializer.blocks.resolved_objects"]
+        result['resolved_uids'] = resolved_objects
 
         # Insert expandable elements
         result.update(expandable_elements(self.context, self.request))
