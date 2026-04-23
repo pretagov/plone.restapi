@@ -25,8 +25,49 @@ from zope.publisher.interfaces import NotFound
 from ZODB.blob import rename_or_copy_blob
 
 import json
+import logging
 import os
 import time
+
+
+logger = logging.getLogger(__name__)
+
+
+_S3_MIN_PART_SIZE = 5 * 1024 * 1024  # S3 multipart minimum (non-final parts)
+_S3_DEFAULT_PART_SIZE = 8 * 1024 * 1024
+
+
+def _s3_part_size():
+    """Flush threshold for buffered parts. Env-overridable; floored at 5 MiB."""
+    raw = os.environ.get("TUS_S3_PART_SIZE_BYTES")
+    if not raw:
+        return _S3_DEFAULT_PART_SIZE
+    try:
+        size = int(raw)
+    except ValueError:
+        return _S3_DEFAULT_PART_SIZE
+    return max(size, _S3_MIN_PART_SIZE)
+
+
+def _resolve_s3_blob_storage(context):
+    """Return (storage, s3_client) if the context's ZODB storage is an
+    S3BlobStorage, else None. Import-guarded so environments without
+    zodb-s3blobs installed continue to work.
+    """
+    try:
+        from zodb_s3blobs.storage import S3BlobStorage
+    except ImportError:
+        return None
+    jar = getattr(aq_base(context), "_p_jar", None)
+    if jar is None:
+        return None
+    db = jar.db()
+    if db is None:
+        return None
+    storage = db.storage
+    if not isinstance(storage, S3BlobStorage):
+        return None
+    return storage, storage._s3_client
 
 
 TUS_OPTIONS_RESPONSE_HEADERS = {
@@ -117,6 +158,10 @@ class UploadPost(TUSBaseService):
 
         tus_upload = TUSUpload(uuid4().hex, metadata=metadata)
 
+        resolved = _resolve_s3_blob_storage(self.context)
+        if resolved is not None:
+            tus_upload.initialize_s3(*resolved)
+
         self.request.response.setStatus(201)
         url = self.request.getURL()
         # Regardless of @tus-upload or @tus-replace the response should return
@@ -153,6 +198,11 @@ class UploadFileBase(TUSBaseService):
         length = tus_upload.length()
         if length == 0:
             return
+
+        if tus_upload.s3_mode:
+            resolved = _resolve_s3_blob_storage(self.context)
+            if resolved is not None:
+                tus_upload.attach_s3_runtime(*resolved)
 
         return tus_upload
 
@@ -308,18 +358,100 @@ class TUSUpload:
 
         self.filepath = os.path.join(self.tmp_dir, self.file_prefix + self.uid)
         self.metadata_path = self.filepath + ".json"
+        # Per-upload in-progress S3 part buffer (separate from self.filepath)
+        self.part_buffer_path = self.filepath + ".part"
         self._metadata = None
+
+        # Runtime-only S3 refs (not persisted; re-attached on each request)
+        self._s3_storage = None
+        self._s3_client = None
+        # Set once process_blob has handed the staging key to the storage
+        self._handoff_done = False
 
         if metadata is not None:
             self.initalize(metadata)
 
         self._file = None
 
+    # ----- metadata + persisted S3 state -----
+
     def initalize(self, metadata):
         """Initialize a new TUS upload by writing its metadata to disk."""
         self.cleanup_expired()
         with open(self.metadata_path, "w") as f:
             json.dump(metadata, f)
+        self._metadata = metadata
+
+    def metadata(self):
+        """Returns the metadata of the current upload."""
+        if self._metadata is None:
+            if os.path.exists(self.metadata_path):
+                with open(self.metadata_path, "rb") as f:
+                    self._metadata = json.load(f)
+        return self._metadata or {}
+
+    def _save_metadata(self):
+        if self._metadata is None:
+            return
+        tmp_path = self.metadata_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(self._metadata, f)
+        os.replace(tmp_path, self.metadata_path)
+
+    def _s3_state(self):
+        return self.metadata().setdefault("_s3_state", {})
+
+    @property
+    def s3_mode(self):
+        return bool(self.metadata().get("_s3_state", {}).get("enabled"))
+
+    @property
+    def staging_key(self):
+        return self._s3_state().get("staging_key")
+
+    @property
+    def multipart_upload_id(self):
+        return self._s3_state().get("multipart_upload_id")
+
+    @property
+    def parts(self):
+        return self._s3_state().setdefault("parts", [])
+
+    @property
+    def next_part_number(self):
+        return self._s3_state().get("next_part_number", 1)
+
+    @property
+    def total_uploaded_bytes(self):
+        return self._s3_state().get("total_uploaded_bytes", 0)
+
+    # ----- S3 initialisation / attachment -----
+
+    def initialize_s3(self, s3_storage, s3_client):
+        """Create the S3 multipart upload and persist per-upload state.
+
+        Called once by UploadPost after a fresh TUSUpload is created and the
+        target context's storage has been identified as S3-backed.
+        """
+        staging_key = f"tus-staging/{self.uid}"
+        upload_id = s3_client.create_multipart_upload(staging_key)
+        state = self._s3_state()
+        state["enabled"] = True
+        state["staging_key"] = staging_key
+        state["multipart_upload_id"] = upload_id
+        state["parts"] = []
+        state["next_part_number"] = 1
+        state["total_uploaded_bytes"] = 0
+        self._save_metadata()
+        self._s3_storage = s3_storage
+        self._s3_client = s3_client
+
+    def attach_s3_runtime(self, s3_storage, s3_client):
+        """Re-attach runtime S3 refs after a worker-local TUSUpload rehydration."""
+        self._s3_storage = s3_storage
+        self._s3_client = s3_client
+
+    # ----- length / offset / expiration -----
 
     def length(self):
         """Returns the total upload length."""
@@ -330,12 +462,36 @@ class TUSUpload:
 
     def offset(self):
         """Returns the current offset."""
+        if self.s3_mode:
+            buffered = 0
+            if os.path.exists(self.part_buffer_path):
+                buffered = os.path.getsize(self.part_buffer_path)
+            return self.total_uploaded_bytes + buffered
         if os.path.exists(self.filepath):
             return os.path.getsize(self.filepath)
         return 0
 
+    def expires(self):
+        """Returns the expiration time of the current upload."""
+        stat_path = None
+        if self.s3_mode and os.path.exists(self.part_buffer_path):
+            stat_path = self.part_buffer_path
+        elif os.path.exists(self.filepath):
+            stat_path = self.filepath
+        if stat_path is not None:
+            expiration = os.stat(stat_path).st_mtime + self.expiration_period
+        else:
+            expiration = time.time() + self.expiration_period
+        return formatdate(expiration, False, True)
+
+    # ----- write / finalize -----
+
     def write(self, infile, offset=0):
         """Write to uploaded file at the given offset."""
+        if self.s3_mode:
+            self._write_s3(infile)
+            return
+
         mode = "wb"
         if os.path.exists(self.filepath):
             mode = "ab+"
@@ -351,6 +507,88 @@ class TUSUpload:
         if length and offset >= length:
             self.finished = True
 
+    def _write_s3(self, infile):
+        """Append chunk bytes into the part buffer, flushing when full."""
+        if self._s3_client is None:
+            raise RuntimeError(
+                "TUSUpload is in S3 mode but no S3 client is attached. "
+                "Call attach_s3_runtime(...) before writing."
+            )
+        flush_threshold = _s3_part_size()
+        length = self.length()
+        with open(self.part_buffer_path, "ab") as f:
+            while True:
+                chunk = infile.read(2 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                if f.tell() >= flush_threshold:
+                    # Close before flush so the path can be re-opened for read
+                    f.close()
+                    self._flush_part(final=False)
+                    f = open(self.part_buffer_path, "ab")
+        # End of this PATCH body — decide whether to finalise.
+        total_after = self.total_uploaded_bytes
+        buf_size = (
+            os.path.getsize(self.part_buffer_path)
+            if os.path.exists(self.part_buffer_path)
+            else 0
+        )
+        total_after += buf_size
+        if length and total_after >= length:
+            # Final part (any size allowed)
+            if buf_size > 0:
+                self._flush_part(final=True)
+            self._complete_multipart()
+            self.finished = True
+
+    def _flush_part(self, final):
+        """Upload the current part buffer as one S3 UploadPart and reset it."""
+        if not os.path.exists(self.part_buffer_path):
+            return
+        size = os.path.getsize(self.part_buffer_path)
+        if size == 0:
+            os.remove(self.part_buffer_path)
+            return
+        state = self._s3_state()
+        part_number = state["next_part_number"]
+        with open(self.part_buffer_path, "rb") as body:
+            etag = self._s3_client.upload_part(
+                self.staging_key,
+                self.multipart_upload_id,
+                part_number,
+                body,
+            )
+        state["parts"].append(
+            {"PartNumber": part_number, "ETag": etag, "Size": size}
+        )
+        state["next_part_number"] = part_number + 1
+        state["total_uploaded_bytes"] = state.get("total_uploaded_bytes", 0) + size
+        self._save_metadata()
+        os.remove(self.part_buffer_path)
+        logger.debug(
+            "TUS/S3: flushed part %d (%d bytes) for upload %s final=%s",
+            part_number,
+            size,
+            self.uid,
+            final,
+        )
+
+    def _complete_multipart(self):
+        self._s3_client.complete_multipart_upload(
+            self.staging_key,
+            self.multipart_upload_id,
+            self.parts,
+        )
+        logger.debug(
+            "TUS/S3: completed multipart upload %s (%d parts) staging_key=%s",
+            self.uid,
+            len(self.parts),
+            self.staging_key,
+        )
+
+    # ----- open/close/cleanup -----
+
     def open(self):
         """Open the uploaded file for reading and return it."""
         if self._file is None or self._file.closed:
@@ -362,16 +600,35 @@ class TUSUpload:
         if self._file is not None and not self._file.closed:
             self._file.close()
 
-    def metadata(self):
-        """Returns the metadata of the current upload."""
-        if self._metadata is None:
-            if os.path.exists(self.metadata_path):
-                with open(self.metadata_path, "rb") as f:
-                    self._metadata = json.load(f)
-        return self._metadata or {}
-
     def cleanup(self):
-        """Remove temporary upload files."""
+        """Remove temporary upload files and abort any dangling S3 state."""
+        if self.s3_mode:
+            # If the upload was abandoned (never completed), abort multipart.
+            if not self.finished and self.multipart_upload_id and self._s3_client:
+                try:
+                    self._s3_client.abort_multipart_upload(
+                        self.staging_key, self.multipart_upload_id
+                    )
+                except Exception:
+                    logger.warning(
+                        "TUS/S3: failed to abort multipart for upload %s",
+                        self.uid,
+                        exc_info=True,
+                    )
+            # If we completed but never handed off, delete the staging object.
+            if self.finished and not self._handoff_done and self._s3_client:
+                try:
+                    self._s3_client.delete_object(self.staging_key)
+                except Exception:
+                    logger.warning(
+                        "TUS/S3: failed to delete staging key %s after "
+                        "incomplete handoff for upload %s",
+                        self.staging_key,
+                        self.uid,
+                        exc_info=True,
+                    )
+            if os.path.exists(self.part_buffer_path):
+                os.remove(self.part_buffer_path)
         if os.path.exists(self.filepath):
             os.remove(self.filepath)
         if os.path.exists(self.metadata_path):
@@ -383,24 +640,64 @@ class TUSUpload:
             if fnmatch(filename, "tus_upload_*.json"):
                 metadata_path = os.path.join(self.tmp_dir, filename)
                 filepath = metadata_path[:-5]
-                if os.path.exists(filepath):
-                    mtime = os.stat(filepath).st_mtime
-                else:
-                    mtime = os.stat(metadata_path).st_mtime
+                part_buffer_path = filepath + ".part"
+                mtime_src = None
+                for candidate in (part_buffer_path, filepath, metadata_path):
+                    if os.path.exists(candidate):
+                        mtime_src = candidate
+                        break
+                if mtime_src is None:
+                    continue
+                mtime = os.stat(mtime_src).st_mtime
+                if (time.time() - mtime) <= self.expiration_period:
+                    continue
+                # Expired: best-effort S3 cleanup if this was an S3-mode upload.
+                try:
+                    with open(metadata_path, "rb") as f:
+                        expired_meta = json.load(f)
+                except (OSError, ValueError):
+                    expired_meta = {}
+                s3_state = expired_meta.get("_s3_state") or {}
+                if s3_state.get("enabled") and self._s3_client is not None:
+                    try:
+                        self._s3_client.abort_multipart_upload(
+                            s3_state.get("staging_key"),
+                            s3_state.get("multipart_upload_id"),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "TUS/S3: expired-upload abort failed (key=%s)",
+                            s3_state.get("staging_key"),
+                            exc_info=True,
+                        )
+                os.remove(metadata_path)
+                for extra in (filepath, part_buffer_path):
+                    if os.path.exists(extra):
+                        os.remove(extra)
 
-                if (time.time() - mtime) > self.expiration_period:
-                    os.remove(metadata_path)
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-
-    def expires(self):
-        """Returns the expiration time of the current upload."""
-        if os.path.exists(self.filepath):
-            expiration = os.stat(self.filepath).st_mtime + self.expiration_period
-        else:
-            expiration = time.time() + self.expiration_period
-        return formatdate(expiration, False, True)
+    # ----- handoff to ZODB blob -----
 
     def process_blob(self, blob):
+        if self.s3_mode:
+            if self._s3_storage is None:
+                raise RuntimeError(
+                    "TUSUpload in S3 mode missing storage reference at handoff"
+                )
+            size = self.length()
+            # Write a tiny marker file and rename it into _p_blob_uncommitted,
+            # matching the normal rename_or_copy_blob flow. The marker's
+            # contents are diagnostic only; authority is the registration.
+            marker_source = self.filepath + ".marker"
+            marker_content = (
+                f"S3BLOB-STAGED\n{self.staging_key}\n{size}\n".encode()
+            )
+            with open(marker_source, "wb") as f:
+                f.write(marker_content)
+            rename_or_copy_blob(marker_source, blob._p_blob_uncommitted)
+            self._s3_storage.register_staged_s3_key(
+                blob._p_blob_uncommitted, self.staging_key, size
+            )
+            self._handoff_done = True
+            return
         rename_or_copy_blob(self.filepath, blob._p_blob_uncommitted)
 
