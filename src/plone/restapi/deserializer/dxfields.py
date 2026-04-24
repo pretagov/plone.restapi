@@ -281,6 +281,13 @@ class NamedFieldDeserializer(DefaultFieldDeserializer):
         # very quick operation
         if tus:
             tus.process_blob(value._blob)
+            # The NamedBlobFile was constructed with a 1-byte placeholder and
+            # may have had its ``size`` cached on __dict__ during validation.
+            # In S3 mode the on-disk blob is a tiny marker, not the real
+            # bytes, so without this override ``value.size`` would be pickled
+            # as the marker length. Prime the cache with the true length so
+            # the persisted size matches the uploaded file.
+            value.__dict__["size"] = tus.length()
 
         return value
 
