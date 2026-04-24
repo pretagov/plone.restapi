@@ -53,20 +53,36 @@ def _resolve_s3_blob_storage(context):
     """Return (storage, s3_client) if the context's ZODB storage is an
     S3BlobStorage, else None. Import-guarded so environments without
     zodb-s3blobs installed continue to work.
+
+    Returns the **Connection's** MVCC instance of the storage (``jar._storage``),
+    not ``db.storage``. ZODB's ``DB.open()`` calls ``new_instance()`` on the
+    storage for each connection, and commits happen through that per-connection
+    instance. The S3BlobStorage keeps pending/staged state on the instance, so
+    registrations made on ``db.storage`` (the primary) would be invisible at
+    commit time on the per-connection instance.
     """
     try:
         from zodb_s3blobs.storage import S3BlobStorage
     except ImportError:
+        logger.debug("TUS/S3: zodb_s3blobs not installed; staying in local mode")
         return None
     jar = getattr(aq_base(context), "_p_jar", None)
     if jar is None:
+        logger.debug("TUS/S3: context has no _p_jar; staying in local mode")
         return None
-    db = jar.db()
-    if db is None:
-        return None
-    storage = db.storage
+    storage = getattr(jar, "_storage", None)
+    if storage is None:
+        db = jar.db()
+        storage = db.storage if db is not None else None
     if not isinstance(storage, S3BlobStorage):
+        logger.debug(
+            "TUS/S3: storage %r is not S3BlobStorage; staying in local mode",
+            type(storage).__name__,
+        )
         return None
+    logger.debug(
+        "TUS/S3: resolved per-connection S3BlobStorage id=%s", id(storage)
+    )
     return storage, storage._s3_client
 
 
@@ -445,6 +461,13 @@ class TUSUpload:
         self._save_metadata()
         self._s3_storage = s3_storage
         self._s3_client = s3_client
+        logger.info(
+            "TUS/S3: initialised multipart upload uid=%s staging_key=%s "
+            "upload_id=%s",
+            self.uid,
+            staging_key,
+            upload_id,
+        )
 
     def attach_s3_runtime(self, s3_storage, s3_client):
         """Re-attach runtime S3 refs after a worker-local TUSUpload rehydration."""
@@ -580,10 +603,12 @@ class TUSUpload:
             self.multipart_upload_id,
             self.parts,
         )
-        logger.debug(
-            "TUS/S3: completed multipart upload %s (%d parts) staging_key=%s",
+        logger.info(
+            "TUS/S3: completed multipart upload uid=%s parts=%d "
+            "total_bytes=%d staging_key=%s",
             self.uid,
             len(self.parts),
+            self.total_uploaded_bytes,
             self.staging_key,
         )
 
@@ -693,11 +718,21 @@ class TUSUpload:
             )
             with open(marker_source, "wb") as f:
                 f.write(marker_content)
-            rename_or_copy_blob(marker_source, blob._p_blob_uncommitted)
+            target_path = blob._p_blob_uncommitted
+            rename_or_copy_blob(marker_source, target_path)
             self._s3_storage.register_staged_s3_key(
-                blob._p_blob_uncommitted, self.staging_key, size
+                target_path, self.staging_key, size
             )
             self._handoff_done = True
+            logger.info(
+                "TUS/S3: handoff complete uid=%s staging_key=%s size=%d "
+                "marker_path=%s storage_id=%s",
+                self.uid,
+                self.staging_key,
+                size,
+                target_path,
+                id(self._s3_storage),
+            )
             return
         rename_or_copy_blob(self.filepath, blob._p_blob_uncommitted)
 
