@@ -140,4 +140,20 @@
       name="@tus-upload"
       />
 
+  <plone:service
+      method="DELETE"
+      factory=".tus.UploadDelete"
+      for="Products.CMFCore.interfaces.IContentish"
+      permission="zope2.View"
+      name="@tus-upload"
+      />
+
+  <plone:service
+      method="DELETE"
+      factory=".tus.UploadDelete"
+      for="Products.CMFPlone.interfaces.IPloneSiteRoot"
+      permission="cmf.AddPortalContent"
+      name="@tus-upload"
+      />
+
 </configure>
