@@ -5,6 +5,7 @@ from base64 import b64decode
 from BTrees.OOBTree import OOBTree
 from email.utils import formatdate
 from fnmatch import fnmatch
+from io import BytesIO
 from persistent.mapping import PersistentMapping
 from plone.rest.interfaces import ICORSPolicy
 from plone.restapi.bbb import base_hasattr
@@ -22,6 +23,7 @@ from zExceptions import Unauthorized
 from zope.annotation.interfaces import IAnnotations
 from zope.component import queryMultiAdapter
 from zope.event import notify
+from zope.interface import alsoProvides
 from zope.interface import implementer
 from zope.lifecycleevent import ObjectCreatedEvent
 from zope.publisher.interfaces import IPublishTraverse
@@ -152,6 +154,26 @@ class TUSBaseService(Service):
         self.request.response.setStatus(status)
         return {"error": {"type": type, "message": message}}
 
+    def disable_csrf_protection(self):
+        """Mark the request as auto-CSRF-exempt.
+
+        plone.protect's auto-CSRF check fires whenever a request triggers a
+        ZODB write. The annotation-backed S3 path writes the upload
+        descriptor on POST and updates ``last_active`` on every PATCH; the
+        DELETE path removes the annotation. None of these requests carry a
+        plone.protect token (the TUS protocol has no provision for one),
+        and the endpoints already require Bearer/Basic auth — so the
+        protection is redundant. Mirrors the pattern used in
+        ``plone.restapi.services.upgrade.post`` and similar services.
+        """
+        import plone.protect.interfaces
+
+        if "IDisableCSRFProtection" in dir(plone.protect.interfaces):
+            alsoProvides(
+                self.request,
+                plone.protect.interfaces.IDisableCSRFProtection,
+            )
+
 
 class UploadPost(TUSBaseService):
     """TUS upload endpoint for creating a new upload resource."""
@@ -159,6 +181,8 @@ class UploadPost(TUSBaseService):
     def reply(self):
         if not self.check_tus_version():
             return self.unsupported_version()
+
+        self.disable_csrf_protection()
 
         length = self.request.getHeader("Upload-Length", "")
         try:
@@ -322,6 +346,8 @@ class UploadPatch(UploadFileBase):
         if not self.check_tus_version():
             return self.unsupported_version()
 
+        self.disable_csrf_protection()
+
         content_type = self.request.getHeader("Content-Type")
         if content_type != "application/offset+octet-stream":
             return self.error("Bad Request", "Missing or invalid Content-Type header")
@@ -432,6 +458,8 @@ class UploadDelete(UploadFileBase):
 
         if not self.check_tus_version():
             return self.unsupported_version()
+
+        self.disable_csrf_protection()
 
         tus_upload.close()
         tus_upload.cleanup()
@@ -708,7 +736,14 @@ class S3TUSUpload(TUSUpload):
 
         Sparse parts beyond the first gap are ignored — the client will
         re-PATCH from there and S3 will overwrite by part number.
+
+        If the upload has been completed in this request, the multipart
+        upload no longer exists in S3 and ``list_parts`` would raise
+        ``NoSuchUpload``. Short-circuit to ``length`` in that case — by
+        definition a completed upload's offset equals its length.
         """
+        if self.finished:
+            return self.length()
         entry = self._entry()
         chunk_size = entry.get("chunk_size")
         if not chunk_size:
@@ -770,11 +805,20 @@ class S3TUSUpload(TUSUpload):
                 )
 
         part_number = (offset // chunk_size) + 1
-        # Stream the request body to S3. boto3 reads from a file-like object
-        # and sets Content-Length internally based on the iterable, but we
-        # know the size up front so we wrap to ensure exactly content_length
-        # bytes are read.
-        body = _BoundedReader(infile, content_length)
+        # Read exactly content_length bytes into a seekable buffer. boto3's
+        # SigV4 signer needs to either rewind the body (to compute SHA256
+        # then re-read for upload) or hash a bytes-like payload directly;
+        # a streaming reader without seek/tell falls between those paths
+        # and triggers `TypeError: object supporting the buffer API required`.
+        # The request body is already buffered in Zope's tempfile so this
+        # doesn't add real memory pressure beyond the chunk itself.
+        data = infile.read(content_length)
+        if len(data) != content_length:
+            raise TUSUploadError(
+                f"Short read on PATCH body: expected {content_length} bytes, "
+                f"got {len(data)}"
+            )
+        body = BytesIO(data)
         etag = self._s3_client.upload_part(
             entry["staging_key"],
             entry["multipart_upload_id"],
@@ -970,30 +1014,3 @@ class S3TUSUpload(TUSUpload):
         )
 
 
-class _BoundedReader:
-    """File-like wrapper that yields exactly ``limit`` bytes from ``inner``.
-
-    boto3's ``upload_part`` reads from the body until EOF (or until
-    Content-Length, when streamed via the underlying HTTP client). We pass a
-    bounded reader so we can't accidentally drain past the chunk boundary
-    and into the next request, and so the upstream can know the size.
-    """
-
-    def __init__(self, inner, limit):
-        self._inner = inner
-        self._remaining = limit
-        # boto3 sniffs ``len()`` to set Content-Length, falling back to
-        # ``seek/tell`` if absent. Provide ``__len__`` so it doesn't have to.
-        self._length = limit
-
-    def __len__(self):
-        return self._length
-
-    def read(self, size=-1):
-        if self._remaining <= 0:
-            return b""
-        if size < 0 or size > self._remaining:
-            size = self._remaining
-        data = self._inner.read(size)
-        self._remaining -= len(data)
-        return data
