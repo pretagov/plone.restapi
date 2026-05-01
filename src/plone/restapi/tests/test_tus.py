@@ -775,7 +775,8 @@ class FakeS3Client:
     surface to exercise ``S3TUSUpload``.
     """
 
-    def __init__(self):
+    def __init__(self, bucket_name="test-bucket"):
+        self.bucket_name = bucket_name
         # {key: upload_id}
         self._uploads = {}
         # {(key, upload_id): {part_number: {'ETag': ..., 'Size': ...}}}
@@ -783,6 +784,35 @@ class FakeS3Client:
         self._completed = set()
         self._aborted = set()
         self._next_upload_id = 1
+        # Lifecycle state: in-memory rules list + counters for assertions.
+        self._lifecycle_rules = []
+        self._lifecycle_get_calls = 0
+        self._lifecycle_put_calls = 0
+        # Configurable error injection for tests.
+        self._lifecycle_get_raises = None
+        self._lifecycle_put_raises = None
+
+    def ensure_abort_multipart_lifecycle_rule(self, rule_id, prefix, days=7):
+        self._lifecycle_get_calls += 1
+        if self._lifecycle_get_raises is not None:
+            raise self._lifecycle_get_raises
+        if any(r.get("ID") == rule_id for r in self._lifecycle_rules):
+            return True
+        self._lifecycle_put_calls += 1
+        if self._lifecycle_put_raises is not None:
+            raise self._lifecycle_put_raises
+        self._lifecycle_rules.append(
+            {
+                "ID": rule_id,
+                "Status": "Enabled",
+                "Filter": {"Prefix": prefix},
+                "AbortIncompleteMultipartUpload": {
+                    "DaysAfterInitiation": days
+                },
+                "Expiration": {"Days": days},
+            }
+        )
+        return True
 
     def create_multipart_upload(self, s3_key):
         upload_id = f"mpu-{self._next_upload_id}"
@@ -1060,3 +1090,62 @@ class TestS3TUSUpload(unittest.TestCase):
         # Tear the folder down so the next test starts clean.
         api.content.delete(obj=self.folder)
         transaction.commit()
+
+
+class TestTUSLifecycleAutoApply(unittest.TestCase):
+    """Tests for the once-per-process lifecycle rule auto-apply."""
+
+    def setUp(self):
+        # Reset the process-local set between tests.
+        from plone.restapi.services.content.tus import _LIFECYCLE_APPLIED
+
+        _LIFECYCLE_APPLIED.clear()
+        self.s3 = FakeS3Client(bucket_name="bucket-a")
+
+    def test_first_call_applies_and_marks_bucket(self):
+        from plone.restapi.services.content.tus import (
+            _ensure_lifecycle_rule_once,
+            _LIFECYCLE_APPLIED,
+        )
+
+        _ensure_lifecycle_rule_once(self.s3)
+        self.assertEqual(self.s3._lifecycle_get_calls, 1)
+        self.assertEqual(self.s3._lifecycle_put_calls, 1)
+        self.assertIn("bucket-a", _LIFECYCLE_APPLIED)
+
+    def test_second_call_is_a_noop(self):
+        from plone.restapi.services.content.tus import (
+            _ensure_lifecycle_rule_once,
+        )
+
+        _ensure_lifecycle_rule_once(self.s3)
+        _ensure_lifecycle_rule_once(self.s3)
+        # Still only one round trip — the second call is short-circuited
+        # by the process-local set.
+        self.assertEqual(self.s3._lifecycle_get_calls, 1)
+        self.assertEqual(self.s3._lifecycle_put_calls, 1)
+
+    def test_failure_is_swallowed_and_bucket_still_marked(self):
+        from plone.restapi.services.content.tus import (
+            _ensure_lifecycle_rule_once,
+            _LIFECYCLE_APPLIED,
+        )
+
+        self.s3._lifecycle_get_raises = RuntimeError("boom")
+        # Should not raise; should still record the bucket so subsequent
+        # POSTs don't keep retrying.
+        _ensure_lifecycle_rule_once(self.s3)
+        self.assertIn("bucket-a", _LIFECYCLE_APPLIED)
+
+    def test_separate_buckets_are_each_handled_once(self):
+        from plone.restapi.services.content.tus import (
+            _ensure_lifecycle_rule_once,
+        )
+
+        s3_b = FakeS3Client(bucket_name="bucket-b")
+        _ensure_lifecycle_rule_once(self.s3)
+        _ensure_lifecycle_rule_once(s3_b)
+        _ensure_lifecycle_rule_once(self.s3)
+        _ensure_lifecycle_rule_once(s3_b)
+        self.assertEqual(self.s3._lifecycle_get_calls, 1)
+        self.assertEqual(s3_b._lifecycle_get_calls, 1)

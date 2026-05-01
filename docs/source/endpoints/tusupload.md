@@ -153,7 +153,65 @@ See the `plone.rest` documentation for more information on how to configure CORS
 See <https://tus.io/protocols/resumable-upload.html#headers> for a list and description of the individual headers.
 
 
-## Temporary Upload Directory
+## Temporary Upload Directory (local-disk mode)
 
-During upload, files are stored in a temporary directory that by default is located in the `CLIENT_HOME` directory.
-If you are using a multi ZEO client setup without session stickiness you *must* configure this to a directory shared by all ZEO clients by setting the `TUS_TMP_FILE_DIR` environment variable, for example `TUS_TMP_FILE_DIR=/tmp/tus-uploads`.
+When the ZODB storage is **not** S3-backed, in-progress uploads are buffered to a temporary directory that defaults to `CLIENT_HOME/tus-uploads`.
+If you are using a multi-ZEO-client setup without session stickiness in this mode you *must* configure this to a directory shared by all clients by setting the `TUS_TMP_FILE_DIR` environment variable, for example `TUS_TMP_FILE_DIR=/tmp/tus-uploads`.
+
+This directory is unused when the storage is S3-backed (see below).
+
+
+## S3-backed storage
+
+When the ZODB storage is `zodb_s3blobs.S3BlobStorage`, the TUS service streams chunks directly into an S3 multipart upload under the `tus-staging/` key prefix.
+State for in-progress uploads is held in a ZODB annotation on the upload's container (key `plone.restapi.tus_uploads`), which makes the data path independent of which worker handled which chunk — any worker can serve any `PATCH`, `HEAD`, or `DELETE` for an upload, so sticky-routing is unnecessary.
+
+A successful final `PATCH` triggers `CompleteMultipartUpload` and hands the staging key off to `S3BlobStorage` for registration; the annotation entry is removed at that point.
+Abandoned uploads (browser tab closed mid-chunk, network drop, worker crash) leave dangling multiparts behind. S3 charges for storage of in-progress parts and silently retains them until they're explicitly aborted — so deployments using S3-backed storage should configure a lifecycle rule that auto-aborts stale staging multiparts.
+
+### Lifecycle rule for abandoned multipart uploads
+
+The TUS service tries to install the rule on the first `POST` per process via `S3Client.ensure_abort_multipart_lifecycle_rule`.
+The call is idempotent (it reads the bucket's existing lifecycle configuration, returns early if a rule with the right ID is already present, otherwise merges its rule with any others and writes the configuration back) and tolerant of failure (a single `WARNING` is logged and uploads continue without the rule).
+
+Defaults: prefix `tus-staging/`, rule ID `tus-staging-abort`, 7 days. Both `AbortIncompleteMultipartUpload` (drops in-flight parts) and `Expiration` (defensively deletes any orphaned objects under the prefix) are set.
+
+For auto-apply, the IAM principal needs (in addition to the base zodb-s3blobs permissions):
+
+- `s3:GetLifecycleConfiguration`
+- `s3:PutLifecycleConfiguration`
+
+If you don't want to grant these, apply the rule manually once per bucket and the auto-apply call will be a no-op (it sees the existing rule and skips the write).
+
+### Manual setup
+
+`tus-lifecycle.json`:
+
+```json
+{
+  "Rules": [{
+    "ID": "tus-staging-abort",
+    "Status": "Enabled",
+    "Filter": {"Prefix": "tus-staging/"},
+    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+    "Expiration": {"Days": 7}
+  }]
+}
+```
+
+```sh
+# AWS S3
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket <bucket> \
+  --lifecycle-configuration file://tus-lifecycle.json
+
+# Tigris (S3-compatible)
+aws --endpoint-url=https://fly.storage.tigris.dev \
+    s3api put-bucket-lifecycle-configuration \
+    --bucket <bucket> \
+    --lifecycle-configuration file://tus-lifecycle.json
+```
+
+**Important:** `put-bucket-lifecycle-configuration` *replaces* all rules for the bucket.
+If the bucket already has lifecycle rules for other purposes, fetch them first with `aws s3api get-bucket-lifecycle-configuration --bucket <bucket>`, append the rule above to the `Rules` array, then put the merged set.
+The auto-apply path performs this merge automatically.

@@ -43,6 +43,46 @@ logger = logging.getLogger(__name__)
 # OOBTree[uid → PersistentMapping(descriptor)] for in-progress S3 uploads.
 ANNOTATION_KEY = "plone.restapi.tus_uploads"
 
+# S3 staging key prefix and lifecycle rule ID for auto-aborting abandoned
+# multipart uploads. Kept aligned with the manual setup instructions
+# documented in CLAUDE.md.
+TUS_STAGING_PREFIX = "tus-staging/"
+TUS_LIFECYCLE_RULE_ID = "tus-staging-abort"
+TUS_LIFECYCLE_DAYS = 7
+
+# Process-local set of bucket names already checked / had the rule applied
+# during this process's lifetime. Auto-apply runs at most once per bucket
+# per process, regardless of success — never block uploads on lifecycle.
+_LIFECYCLE_APPLIED: set = set()
+
+
+def _ensure_lifecycle_rule_once(s3_client):
+    """Apply the abort-multipart lifecycle rule on first POST per process.
+
+    Idempotent within a process; tolerant of failure (logs a warning and
+    moves on). The S3Client method itself is idempotent against the bucket
+    too, so even repeated calls would be safe — this just avoids the round
+    trip after the first call.
+    """
+    bucket = getattr(s3_client, "bucket_name", None)
+    if not bucket or bucket in _LIFECYCLE_APPLIED:
+        return
+    try:
+        s3_client.ensure_abort_multipart_lifecycle_rule(
+            rule_id=TUS_LIFECYCLE_RULE_ID,
+            prefix=TUS_STAGING_PREFIX,
+            days=TUS_LIFECYCLE_DAYS,
+        )
+    except Exception:
+        logger.warning(
+            "TUS/S3: lifecycle setup raised unexpectedly for bucket=%s; "
+            "continuing without it.",
+            bucket,
+            exc_info=True,
+        )
+    # Mark applied either way so we don't retry on every POST.
+    _LIFECYCLE_APPLIED.add(bucket)
+
 
 def _resolve_s3_blob_storage(context):
     """Return (storage, s3_client) if the context's ZODB storage is an
@@ -207,6 +247,7 @@ class UploadPost(TUSBaseService):
         uid = uuid4().hex
         resolved = _resolve_s3_blob_storage(self.context)
         if resolved is not None:
+            _ensure_lifecycle_rule_once(resolved[1])
             tus_upload = S3TUSUpload(
                 uid,
                 container=self.context,
@@ -684,7 +725,7 @@ class S3TUSUpload(TUSUpload):
     def _initialize(self, metadata):
         """Create a fresh multipart upload and persist the descriptor."""
         self.cleanup_expired()
-        staging_key = f"tus-staging/{self.uid}"
+        staging_key = f"{TUS_STAGING_PREFIX}{self.uid}"
         upload_id = self._s3_client.create_multipart_upload(staging_key)
         now = time.time()
         entry = PersistentMapping(
