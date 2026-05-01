@@ -156,4 +156,27 @@
       name="@tus-upload"
       />
 
+  <!--
+    Internal endpoint used by the nginx ``auth_request`` directive in the
+    direct-to-S3 data-plane offload. Returns headers telling nginx whether
+    to forward the chunk to S3 (with a presigned URL) or back to Plone.
+    Registered for both folderish containers and the site root, mirroring
+    the @tus-upload PATCH registrations.
+  -->
+  <plone:service
+      method="GET"
+      factory=".tus.UploadAuthorize"
+      for="Products.CMFCore.interfaces.IContentish"
+      permission="zope2.View"
+      name="@tus-authorize"
+      />
+
+  <plone:service
+      method="GET"
+      factory=".tus.UploadAuthorize"
+      for="Products.CMFPlone.interfaces.IPloneSiteRoot"
+      permission="cmf.AddPortalContent"
+      name="@tus-authorize"
+      />
+
 </configure>

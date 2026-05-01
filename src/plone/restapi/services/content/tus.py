@@ -50,6 +50,26 @@ TUS_STAGING_PREFIX = "tus-staging/"
 TUS_LIFECYCLE_RULE_ID = "tus-staging-abort"
 TUS_LIFECYCLE_DAYS = 7
 
+# Feature flag controlling the nginx-mediated direct-to-S3 offload.
+# When unset/false, the @tus-authorize endpoint always returns
+# X-Route: plone, which keeps PATCH bodies flowing through the Zope worker
+# (the legacy/safe path). When true, @tus-authorize hands nginx a
+# presigned UploadPart URL for non-final chunks; only the final chunk goes
+# back through Plone for the transactional CompleteMultipartUpload +
+# content-creation step. See the deployment doc for nginx config required
+# to make use of this.
+TUS_S3_OFFLOAD_ENV = "TUS_S3_OFFLOAD_ENABLED"
+TUS_PRESIGNED_URL_EXPIRES = 300  # seconds — generous for slow uploads
+
+
+def _s3_offload_enabled():
+    return os.environ.get(TUS_S3_OFFLOAD_ENV, "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
 # Process-local set of bucket names already checked / had the rule applied
 # during this process's lifetime. Auto-apply runs at most once per bucket
 # per process, regardless of success — never block uploads on lifecycle.
@@ -483,6 +503,169 @@ class UploadPatch(UploadFileBase):
         tus_upload.close()
         tus_upload.cleanup()
         self.request.response.setHeader("Location", obj.absolute_url())
+
+
+@implementer(IPublishTraverse)
+class UploadAuthorize(UploadFileBase):
+    """Authorise a single TUS PATCH chunk for direct-to-S3 forwarding.
+
+    This is *not* part of the TUS protocol — it's an internal endpoint used
+    by nginx's ``auth_request`` directive in the data-plane offload setup.
+    nginx makes a body-less GET subrequest here for every PATCH the client
+    sends; the response headers tell nginx whether to:
+
+    * stream the body straight to S3 via a presigned ``UploadPart`` URL
+      (``X-Route: s3`` + ``X-S3-Url``), or
+    * forward the request to Plone unchanged (``X-Route: plone``),
+      which is the path the final chunk takes so Plone can run
+      ``CompleteMultipartUpload`` + content creation transactionally.
+
+    Behaviour is controlled by the ``TUS_S3_OFFLOAD_ENABLED`` env var. When
+    disabled (default), every chunk routes back to Plone — equivalent to
+    not having the offload at all, used as a kill switch.
+
+    The endpoint is auth-checked exactly like the other TUS handlers
+    (``Add portal content`` / ``Modify portal content``), so a leaked
+    ``@tus-authorize`` URL conveys no more privilege than a leaked
+    ``@tus-upload`` URL.
+    """
+
+    def _route_to_plone(self, *, reason=None):
+        """Build a 'send the body to Plone' authorize response."""
+        self.request.response.setHeader("X-Route", "plone")
+        if reason:
+            self.request.response.setHeader("X-Tus-Authorize-Reason", reason)
+        self.request.response.setStatus(200, lock=1)
+        return ""
+
+    def _original_int_header(self, *names):
+        """Return the first parseable header value from ``names``, or None.
+
+        nginx auth_request sub-requests have no original body, so
+        ``Upload-Offset`` / ``Content-Length`` are forwarded under
+        ``X-Original-*`` aliases by the nginx config. Accept either name
+        so the endpoint is callable for ad-hoc testing too.
+        """
+        for name in names:
+            raw = self.request.getHeader(name, "")
+            if raw == "" or raw is None:
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def reply(self):
+        # If offload is disabled, route everything back to Plone — this
+        # makes the endpoint safe to deploy ahead of the nginx config and
+        # acts as a runtime kill switch.
+        if not _s3_offload_enabled():
+            return self._route_to_plone(reason="offload-disabled")
+
+        tus_upload = self.tus_upload()
+        if tus_upload is None:
+            return self.error("Not Found", "", 404)
+
+        metadata = tus_upload.metadata()
+        self.check_add_modify_permission(metadata.get("mode", "create"))
+
+        # Local-disk uploads can't be offloaded — there's no S3 multipart
+        # to PUT into. Route to Plone.
+        if not isinstance(tus_upload, S3TUSUpload):
+            return self._route_to_plone(reason="local-mode")
+
+        offset = self._original_int_header("X-Original-Upload-Offset", "Upload-Offset")
+        content_length = self._original_int_header(
+            "X-Original-Content-Length", "Content-Length"
+        )
+        if offset is None or content_length is None:
+            return self.error(
+                "Bad Request",
+                "Missing or invalid Upload-Offset / Content-Length",
+            )
+
+        # ``metadata()`` returns a copy of the persisted entry — it
+        # contains staging_key, multipart_upload_id, length, chunk_size,
+        # and the descriptor fields. We don't mutate it here.
+        entry = tus_upload.metadata()
+        if not entry:
+            return self.error("Not Found", "", 404)
+
+        length = int(entry["length"])
+        chunk_size = entry.get("chunk_size")
+        is_final = (offset + content_length) >= length
+
+        # Validate alignment / size against the established chunk_size.
+        # First PATCH learns chunk_size — we don't reject it here, but we
+        # do need to know the size to compute a part_number, so we accept
+        # the client's Content-Length as the chunk size for this request.
+        if chunk_size is None:
+            if not is_final and content_length < 5 * 1024 * 1024:
+                return self.error(
+                    "Bad Request",
+                    "Non-final chunk must be at least 5 MiB",
+                )
+            effective_chunk_size = content_length
+        else:
+            if offset % chunk_size != 0:
+                return self.error(
+                    "Bad Request",
+                    f"Upload-Offset {offset} is not a multiple of "
+                    f"chunk_size {chunk_size}",
+                )
+            if not is_final and content_length != chunk_size:
+                return self.error(
+                    "Bad Request",
+                    f"Non-final chunk size {content_length} does not match "
+                    f"chunk_size {chunk_size}",
+                )
+            effective_chunk_size = chunk_size
+
+        # Final chunk goes through Plone — that's where the transactional
+        # CompleteMultipartUpload + content-creation work happens.
+        if is_final:
+            return self._route_to_plone(reason="final-chunk")
+
+        part_number = (offset // effective_chunk_size) + 1
+        try:
+            url = tus_upload._s3_client.generate_upload_part_presigned_url(
+                entry["staging_key"],
+                entry["multipart_upload_id"],
+                part_number,
+                expires_in=TUS_PRESIGNED_URL_EXPIRES,
+            )
+        except Exception:
+            logger.exception(
+                "TUS/S3: presigning failed for uid=%s part=%d; falling "
+                "back to Plone-routed path for this chunk.",
+                self.uid,
+                part_number,
+            )
+            return self._route_to_plone(reason="presign-failed")
+
+        new_offset = offset + content_length
+        self.request.response.setHeader("X-Route", "s3")
+        self.request.response.setHeader("X-S3-Url", url)
+        self.request.response.setHeader("X-Tus-New-Offset", str(new_offset))
+        self.request.response.setHeader("X-Tus-Part-Number", str(part_number))
+        # Surface whether this was the chunk_size-learning PATCH so an
+        # operator inspecting headers can tell. nginx doesn't act on it.
+        if chunk_size is None:
+            self.request.response.setHeader(
+                "X-Tus-Chunk-Size-Learned", str(effective_chunk_size)
+            )
+        self.request.response.setStatus(200, lock=1)
+        logger.debug(
+            "TUS/S3: authorized chunk uid=%s part=%d offset=%d size=%d "
+            "presigned_expires_in=%d",
+            self.uid,
+            part_number,
+            offset,
+            content_length,
+            TUS_PRESIGNED_URL_EXPIRES,
+        )
+        return ""
 
 
 @implementer(IPublishTraverse)

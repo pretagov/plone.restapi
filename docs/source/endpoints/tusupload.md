@@ -215,3 +215,59 @@ aws --endpoint-url=https://fly.storage.tigris.dev \
 **Important:** `put-bucket-lifecycle-configuration` *replaces* all rules for the bucket.
 If the bucket already has lifecycle rules for other purposes, fetch them first with `aws s3api get-bucket-lifecycle-configuration --bucket <bucket>`, append the rule above to the `Rules` array, then put the merged set.
 The auto-apply path performs this merge automatically.
+
+
+## Direct-to-S3 data-plane offload (optional)
+
+By default in S3 mode, every TUS PATCH chunk passes through a Zope worker — Plone reads the request body, calls `upload_part` against S3, and returns 204.
+Under high concurrent-upload load this saturates the worker pool because each upload occupies one worker slot continuously.
+
+The data-plane offload removes this bottleneck by having nginx stream each non-final chunk straight to S3, holding a worker only for a small auth/lookup decision (~50 ms instead of ~hundreds of ms per chunk).
+The final chunk still routes through Plone so `CompleteMultipartUpload` and content creation run transactionally.
+
+### What's involved
+
+- A new internal endpoint `@tus-authorize` returns a presigned `UploadPart` URL plus routing headers (`X-Route`, `X-S3-Url`, `X-Tus-New-Offset`) for each PATCH.
+- nginx's `auth_request` directive consults this endpoint on every `PATCH` to `@tus-upload/<uid>` and either:
+  - streams the request body to S3 via the presigned URL (`X-Route: s3`), or
+  - forwards the request to Plone unchanged (`X-Route: plone`) — used for the final chunk, local-disk uploads, presign errors, or when the offload is disabled.
+
+### Enabling the offload
+
+Two pieces have to line up:
+
+1. **Plone**: set `TUS_S3_OFFLOAD_ENABLED=1` in the environment of every Zope process. The default is "disabled", in which case `@tus-authorize` always returns `X-Route: plone` and the offload is a no-op (this is the kill switch — flip the env var off and restart to revert without redeploying nginx).
+2. **nginx**: deploy a config that runs an `auth_request` against `/_tus_authorize_internal` for `PATCH` requests to `@tus-upload/<uid>`, then proxy-passes to either S3 or Plone based on the response headers. See `plone/conf/nginx/nginx.conf` in the deployment repo for a working configuration.
+
+The Plone-side endpoint is safe to deploy on its own — without the matching nginx config nothing calls it.
+
+### IAM
+
+The Plone IAM principal needs `s3:PutObject` on the staging key pattern (which it already has via the base zodb-s3blobs policy).
+No new permissions are required — the presigned URL is signed using the same credentials that handle every other S3 operation.
+
+### Limits and caveats
+
+- nginx returns the S3 200 response status to the client when the chunk is offloaded; Plone returns 204.
+  The TUS client-side library (e.g. `@rpldy/chunked-sender`) treats both as success codes, but if you use a custom client check the status handling.
+- The `Upload-Offset` response header is computed by Plone in the auth subrequest and emitted by nginx via `add_header`.
+  nginx is configured to hide whatever value the upstream (Plone or S3) returned and substitute the authoritative value, so the client always sees the correct offset.
+- nginx needs a working `resolver` directive to dispatch `proxy_pass` to the (variable) S3 host.
+  In containerised deployments, point at Docker's embedded DNS (`127.0.0.11`); in cloud deployments use the platform-provided resolver.
+- For S3-compatible backends with strict header signing (some non-AWS implementations), the presigned URL flow assumes `UNSIGNED-PAYLOAD` for the body — the default in boto3.
+  Smoke-test against your specific backend before rolling out widely.
+
+### Smoke-testing the endpoint
+
+With the offload enabled, the authorize endpoint is callable directly:
+
+```sh
+curl -i -H "Authorization: Bearer <jwt>" \
+     -H "X-Original-Method: PATCH" \
+     -H "X-Original-Upload-Offset: 0" \
+     -H "X-Original-Content-Length: 10485760" \
+     "https://example.com/path/@tus-authorize/<uid>"
+```
+
+A successful response is `200 OK` with `X-Route: s3`, `X-S3-Url: https://...`, `X-Tus-New-Offset: 10485760`, and an empty body.
+With the env var unset you'll get `X-Route: plone` regardless of input — the offload is off.

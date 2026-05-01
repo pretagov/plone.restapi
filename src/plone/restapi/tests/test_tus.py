@@ -792,6 +792,17 @@ class FakeS3Client:
         self._lifecycle_get_raises = None
         self._lifecycle_put_raises = None
 
+    def generate_upload_part_presigned_url(
+        self, s3_key, upload_id, part_number, expires_in=300
+    ):
+        # Deterministic stub URL so tests can assert routing/output.
+        return (
+            f"https://fake-s3.example/{s3_key}"
+            f"?uploadId={upload_id}"
+            f"&partNumber={part_number}"
+            f"&X-Amz-Signature=stub-signature"
+        )
+
     def ensure_abort_multipart_lifecycle_rule(self, rule_id, prefix, days=7):
         self._lifecycle_get_calls += 1
         if self._lifecycle_get_raises is not None:
@@ -1090,6 +1101,226 @@ class TestS3TUSUpload(unittest.TestCase):
         # Tear the folder down so the next test starts clean.
         api.content.delete(obj=self.folder)
         transaction.commit()
+
+
+class _FakeResponse:
+    def __init__(self):
+        self.headers = {}
+        self.status = 200
+
+    def setHeader(self, name, value):
+        self.headers[name] = value
+
+    def getHeader(self, name, default=None):
+        return self.headers.get(name, default)
+
+    def setStatus(self, status, lock=0):
+        self.status = status
+
+    def setBody(self, body, is_error=0):
+        self.body = body
+
+
+class _FakeRequest:
+    """Minimal stand-in for a Zope/Plone request object.
+
+    Exposes the surface UploadAuthorize touches: getHeader, response, plus
+    the dict-like ``get`` for environment-style lookups (REQUEST_METHOD).
+    """
+
+    def __init__(self, headers=None, method="GET"):
+        self._headers = dict(headers or {})
+        self.response = _FakeResponse()
+        self._env = {"REQUEST_METHOD": method}
+        self._rest_cors_preflight = False
+
+    def getHeader(self, name, default=None):
+        for k, v in self._headers.items():
+            if k.lower() == name.lower():
+                return v
+        return default
+
+    def get(self, key, default=None):
+        return self._env.get(key, default)
+
+
+class TestUploadAuthorize(unittest.TestCase):
+    """Unit tests for the @tus-authorize endpoint's routing logic."""
+
+    layer = PLONE_RESTAPI_DX_FUNCTIONAL_TESTING
+
+    def setUp(self):
+        from plone import api as plone_api
+
+        self.app = self.layer["app"]
+        self.portal = self.layer["portal"]
+        login(self.portal, SITE_OWNER_NAME)
+        self.folder = plone_api.content.create(
+            container=self.portal,
+            type="Folder",
+            id="authorizetest",
+            title="Authorize Test",
+        )
+        transaction.commit()
+        self.s3 = FakeS3Client(bucket_name="authorize-bucket")
+        self.storage = FakeS3Storage()
+        # Force the offload on for this class. Tests that need it off can
+        # delete the env var locally.
+        os.environ["TUS_S3_OFFLOAD_ENABLED"] = "1"
+
+    def tearDown(self):
+        from plone.restapi.services.content.tus import ANNOTATION_KEY
+
+        os.environ.pop("TUS_S3_OFFLOAD_ENABLED", None)
+        ann = IAnnotations(self.folder)
+        if ANNOTATION_KEY in ann:
+            del ann[ANNOTATION_KEY]
+        api.content.delete(obj=self.folder)
+        transaction.commit()
+
+    def _make_s3_upload(self, uid, length, chunk_size=None):
+        from plone.restapi.services.content.tus import S3TUSUpload
+
+        meta = {
+            "length": length,
+            "filename": "x.bin",
+            "content-type": "application/octet-stream",
+            "@type": "File",
+            "mode": "create",
+        }
+        tus = S3TUSUpload(
+            uid,
+            container=self.folder,
+            metadata=meta,
+            s3_storage=self.storage,
+            s3_client=self.s3,
+        )
+        if chunk_size is not None:
+            from plone.restapi.services.content.tus import _container_uploads
+
+            _container_uploads(self.folder)[uid]["chunk_size"] = chunk_size
+        return tus
+
+    def _authorize(self, uid, headers):
+        """Invoke UploadAuthorize.reply() with patched S3 resolution.
+
+        Bypasses ``__init__`` (the ``Service`` base inherits ``object``'s
+        zero-arg init and relies on the publisher to set ``context`` /
+        ``request``); we set them by hand for the unit test.
+        """
+        from plone.restapi.services.content import tus as tus_module
+        from plone.restapi.services.content.tus import UploadAuthorize
+
+        request = _FakeRequest(headers=headers)
+        service = UploadAuthorize.__new__(UploadAuthorize)
+        service.context = self.folder
+        service.request = request
+        service.uid = uid
+        service.__name__ = "@tus-authorize"
+        original_resolve = tus_module._resolve_s3_blob_storage
+        tus_module._resolve_s3_blob_storage = lambda ctx: (
+            self.storage,
+            self.s3,
+        )
+        try:
+            body = service.reply()
+        finally:
+            tus_module._resolve_s3_blob_storage = original_resolve
+        return request.response, body
+
+    def test_offload_disabled_routes_to_plone(self):
+        os.environ.pop("TUS_S3_OFFLOAD_ENABLED", None)
+        self._make_s3_upload("uid1", length=20 * 1024 * 1024)
+        response, _ = self._authorize(
+            "uid1",
+            {
+                "X-Original-Upload-Offset": "0",
+                "X-Original-Content-Length": str(10 * 1024 * 1024),
+            },
+        )
+        self.assertEqual(response.headers.get("X-Route"), "plone")
+        self.assertEqual(response.status, 200)
+        self.assertNotIn("X-S3-Url", response.headers)
+
+    def test_unknown_uid_returns_404(self):
+        # No upload created — annotation lookup will miss.
+        response, _ = self._authorize(
+            "missing-uid",
+            {
+                "X-Original-Upload-Offset": "0",
+                "X-Original-Content-Length": "10485760",
+            },
+        )
+        self.assertEqual(response.status, 404)
+
+    def test_first_chunk_returns_presigned_url(self):
+        chunk = 10 * 1024 * 1024
+        self._make_s3_upload("uid2", length=3 * chunk)
+        response, _ = self._authorize(
+            "uid2",
+            {
+                "X-Original-Upload-Offset": "0",
+                "X-Original-Content-Length": str(chunk),
+            },
+        )
+        self.assertEqual(response.headers.get("X-Route"), "s3")
+        self.assertIn(
+            "tus-staging/uid2", response.headers.get("X-S3-Url", "")
+        )
+        self.assertIn(
+            "partNumber=1", response.headers.get("X-S3-Url", "")
+        )
+        self.assertEqual(
+            response.headers.get("X-Tus-New-Offset"), str(chunk)
+        )
+        self.assertEqual(response.headers.get("X-Tus-Part-Number"), "1")
+
+    def test_subsequent_chunk_uses_correct_part_number(self):
+        chunk = 10 * 1024 * 1024
+        self._make_s3_upload("uid3", length=3 * chunk, chunk_size=chunk)
+        response, _ = self._authorize(
+            "uid3",
+            {
+                "X-Original-Upload-Offset": str(chunk),
+                "X-Original-Content-Length": str(chunk),
+            },
+        )
+        self.assertEqual(response.headers.get("X-Tus-Part-Number"), "2")
+        self.assertIn(
+            "partNumber=2", response.headers.get("X-S3-Url", "")
+        )
+        self.assertEqual(
+            response.headers.get("X-Tus-New-Offset"), str(2 * chunk)
+        )
+
+    def test_final_chunk_routes_to_plone(self):
+        chunk = 10 * 1024 * 1024
+        # Length = 2 chunks + small tail; the third PATCH would complete it.
+        length = 2 * chunk + 100
+        self._make_s3_upload("uid4", length=length, chunk_size=chunk)
+        response, _ = self._authorize(
+            "uid4",
+            {
+                "X-Original-Upload-Offset": str(2 * chunk),
+                "X-Original-Content-Length": "100",
+            },
+        )
+        self.assertEqual(response.headers.get("X-Route"), "plone")
+        self.assertEqual(
+            response.headers.get("X-Tus-Authorize-Reason"), "final-chunk"
+        )
+
+    def test_misaligned_offset_rejected(self):
+        chunk = 10 * 1024 * 1024
+        self._make_s3_upload("uid5", length=3 * chunk, chunk_size=chunk)
+        response, _ = self._authorize(
+            "uid5",
+            {
+                "X-Original-Upload-Offset": str(chunk + 1),
+                "X-Original-Content-Length": str(chunk),
+            },
+        )
+        self.assertEqual(response.status, 400)
 
 
 class TestTUSLifecycleAutoApply(unittest.TestCase):
