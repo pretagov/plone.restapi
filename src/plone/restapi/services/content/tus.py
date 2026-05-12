@@ -536,6 +536,11 @@ class UploadAuthorize(UploadFileBase):
         if reason:
             self.request.response.setHeader("X-Tus-Authorize-Reason", reason)
         self.request.response.setStatus(200, lock=1)
+        logger.debug(
+            "TUS/S3: authorize routed to Plone uid=%s reason=%s",
+            getattr(self, "uid", None),
+            reason,
+        )
         return ""
 
     def _original_int_header(self, *names):
@@ -622,6 +627,17 @@ class UploadAuthorize(UploadFileBase):
                 )
             effective_chunk_size = chunk_size
 
+        # Persist chunk_size on the first chunk's authorize, so that when
+        # the final chunk arrives at Plone (offload-bypassed up to this
+        # point) it has the correct value for part_number calculation.
+        # One write per upload — see S3TUSUpload.remember_chunk_size.
+        # Only this branch writes, so CSRF only needs disabling here
+        # (nginx's auth_request subrequest carries no CSRF token; the
+        # endpoint is already gated by the upload's Add/Modify perm).
+        if chunk_size is None:
+            self.disable_csrf_protection()
+            tus_upload.remember_chunk_size(effective_chunk_size)
+
         # Final chunk goes through Plone — that's where the transactional
         # CompleteMultipartUpload + content-creation work happens.
         if is_final:
@@ -657,7 +673,7 @@ class UploadAuthorize(UploadFileBase):
             )
         self.request.response.setStatus(200, lock=1)
         logger.debug(
-            "TUS/S3: authorized chunk uid=%s part=%d offset=%d size=%d "
+            "TUS/S3: authorize routed to S3 uid=%s part=%d offset=%d size=%d "
             "presigned_expires_in=%d",
             self.uid,
             part_number,
@@ -904,6 +920,29 @@ class S3TUSUpload(TUSUpload):
     def _save_entry(self, entry):
         uploads = _container_uploads(self.container, create=True)
         uploads[self.uid] = entry
+
+    def remember_chunk_size(self, chunk_size):
+        """Persist chunk_size on the upload entry if it isn't set yet.
+
+        Called from the authorize endpoint so that when the data-plane
+        offload is on, the first chunk's size is recorded even though
+        the PATCH body bypasses Plone. Without this, the first PATCH
+        that ever reaches Plone (typically the final chunk, which is
+        smaller) would "learn" the wrong chunk_size from its own
+        content_length and compute a bogus part_number — leading to
+        S3 InvalidArgument on UploadPart.
+
+        One write per upload: gated on chunk_size being None, so every
+        chunk after the first finds it already set and does nothing.
+        """
+        entry = self._entry()
+        if not entry:
+            return
+        if entry.get("chunk_size") is None:
+            entry["chunk_size"] = int(chunk_size)
+            entry["last_active"] = time.time()
+            self._save_entry(entry)
+            self._metadata = entry
 
     def _initialize(self, metadata):
         """Create a fresh multipart upload and persist the descriptor."""
