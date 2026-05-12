@@ -153,7 +153,121 @@ See the `plone.rest` documentation for more information on how to configure CORS
 See <https://tus.io/protocols/resumable-upload.html#headers> for a list and description of the individual headers.
 
 
-## Temporary Upload Directory
+## Temporary Upload Directory (local-disk mode)
 
-During upload, files are stored in a temporary directory that by default is located in the `CLIENT_HOME` directory.
-If you are using a multi ZEO client setup without session stickiness you *must* configure this to a directory shared by all ZEO clients by setting the `TUS_TMP_FILE_DIR` environment variable, for example `TUS_TMP_FILE_DIR=/tmp/tus-uploads`.
+When the ZODB storage is **not** S3-backed, in-progress uploads are buffered to a temporary directory that defaults to `CLIENT_HOME/tus-uploads`.
+If you are using a multi-ZEO-client setup without session stickiness in this mode you *must* configure this to a directory shared by all clients by setting the `TUS_TMP_FILE_DIR` environment variable, for example `TUS_TMP_FILE_DIR=/tmp/tus-uploads`.
+
+This directory is unused when the storage is S3-backed (see below).
+
+
+## S3-backed storage
+
+When the ZODB storage is `zodb_s3blobs.S3BlobStorage`, the TUS service streams chunks directly into an S3 multipart upload under the `tus-staging/` key prefix.
+State for in-progress uploads is held in a ZODB annotation on the upload's container (key `plone.restapi.tus_uploads`), which makes the data path independent of which worker handled which chunk — any worker can serve any `PATCH`, `HEAD`, or `DELETE` for an upload, so sticky-routing is unnecessary.
+
+A successful final `PATCH` triggers `CompleteMultipartUpload` and hands the staging key off to `S3BlobStorage` for registration; the annotation entry is removed at that point.
+Abandoned uploads (browser tab closed mid-chunk, network drop, worker crash) leave dangling multiparts behind. S3 charges for storage of in-progress parts and silently retains them until they're explicitly aborted — so deployments using S3-backed storage should configure a lifecycle rule that auto-aborts stale staging multiparts.
+
+### Lifecycle rule for abandoned multipart uploads
+
+The TUS service tries to install the rule on the first `POST` per process via `S3Client.ensure_abort_multipart_lifecycle_rule`.
+The call is idempotent (it reads the bucket's existing lifecycle configuration, returns early if a rule with the right ID is already present, otherwise merges its rule with any others and writes the configuration back) and tolerant of failure (a single `WARNING` is logged and uploads continue without the rule).
+
+Defaults: prefix `tus-staging/`, rule ID `tus-staging-abort`, 7 days. Both `AbortIncompleteMultipartUpload` (drops in-flight parts) and `Expiration` (defensively deletes any orphaned objects under the prefix) are set.
+
+For auto-apply, the IAM principal needs (in addition to the base zodb-s3blobs permissions):
+
+- `s3:GetLifecycleConfiguration`
+- `s3:PutLifecycleConfiguration`
+
+If you don't want to grant these, apply the rule manually once per bucket and the auto-apply call will be a no-op (it sees the existing rule and skips the write).
+
+### Manual setup
+
+`tus-lifecycle.json`:
+
+```json
+{
+  "Rules": [{
+    "ID": "tus-staging-abort",
+    "Status": "Enabled",
+    "Filter": {"Prefix": "tus-staging/"},
+    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+    "Expiration": {"Days": 7}
+  }]
+}
+```
+
+```sh
+# AWS S3
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket <bucket> \
+  --lifecycle-configuration file://tus-lifecycle.json
+
+# Tigris (S3-compatible)
+aws --endpoint-url=https://fly.storage.tigris.dev \
+    s3api put-bucket-lifecycle-configuration \
+    --bucket <bucket> \
+    --lifecycle-configuration file://tus-lifecycle.json
+```
+
+**Important:** `put-bucket-lifecycle-configuration` *replaces* all rules for the bucket.
+If the bucket already has lifecycle rules for other purposes, fetch them first with `aws s3api get-bucket-lifecycle-configuration --bucket <bucket>`, append the rule above to the `Rules` array, then put the merged set.
+The auto-apply path performs this merge automatically.
+
+
+## Direct-to-S3 data-plane offload (optional)
+
+By default in S3 mode, every TUS PATCH chunk passes through a Zope worker — Plone reads the request body, calls `upload_part` against S3, and returns 204.
+Under high concurrent-upload load this saturates the worker pool because each upload occupies one worker slot continuously.
+
+The data-plane offload removes this bottleneck by having nginx stream each non-final chunk straight to S3, holding a worker only for a small auth/lookup decision (~50 ms instead of ~hundreds of ms per chunk).
+The final chunk still routes through Plone so `CompleteMultipartUpload` and content creation run transactionally.
+
+### What's involved
+
+- A new internal endpoint `@tus-authorize` returns a presigned `UploadPart` URL plus routing headers (`X-Route`, `X-S3-Url`, `X-Tus-New-Offset`) for each PATCH.
+- nginx's `auth_request` directive consults this endpoint on every `PATCH` to `@tus-upload/<uid>` and either:
+  - streams the request body to S3 via the presigned URL (`X-Route: s3`), or
+  - forwards the request to Plone unchanged (`X-Route: plone`) — used for the final chunk, local-disk uploads, presign errors, or when the offload is disabled.
+
+### Enabling the offload
+
+Two pieces have to line up:
+
+1. **Plone**: set `TUS_S3_OFFLOAD_ENABLED=1` in the environment of every Zope process. The default is "disabled", in which case `@tus-authorize` always returns `X-Route: plone` and the offload is a no-op (this is the kill switch — flip the env var off and restart to revert without redeploying nginx).
+2. **nginx**: deploy a config that runs an `auth_request` against `/_tus_authorize_internal` for `PATCH` requests to `@tus-upload/<uid>`, then proxy-passes to either S3 or Plone based on the response headers. See `plone/conf/nginx/nginx.conf` in the deployment repo for a working configuration.
+
+The Plone-side endpoint is safe to deploy on its own — without the matching nginx config nothing calls it.
+
+### IAM
+
+The Plone IAM principal needs `s3:PutObject` on the staging key pattern (which it already has via the base zodb-s3blobs policy).
+No new permissions are required — the presigned URL is signed using the same credentials that handle every other S3 operation.
+
+### Limits and caveats
+
+- nginx returns the S3 200 response status to the client when the chunk is offloaded; Plone returns 204.
+  The TUS client-side library (e.g. `@rpldy/chunked-sender`) treats both as success codes, but if you use a custom client check the status handling.
+- The `Upload-Offset` response header is computed by Plone in the auth subrequest and emitted by nginx via `add_header`.
+  nginx is configured to hide whatever value the upstream (Plone or S3) returned and substitute the authoritative value, so the client always sees the correct offset.
+- nginx needs a working `resolver` directive to dispatch `proxy_pass` to the (variable) S3 host.
+  In containerised deployments, point at Docker's embedded DNS (`127.0.0.11`); in cloud deployments use the platform-provided resolver.
+- For S3-compatible backends with strict header signing (some non-AWS implementations), the presigned URL flow assumes `UNSIGNED-PAYLOAD` for the body — the default in boto3.
+  Smoke-test against your specific backend before rolling out widely.
+
+### Smoke-testing the endpoint
+
+With the offload enabled, the authorize endpoint is callable directly:
+
+```sh
+curl -i -H "Authorization: Bearer <jwt>" \
+     -H "X-Original-Method: PATCH" \
+     -H "X-Original-Upload-Offset: 0" \
+     -H "X-Original-Content-Length: 10485760" \
+     "https://example.com/path/@tus-authorize/<uid>"
+```
+
+A successful response is `200 OK` with `X-Route: s3`, `X-S3-Url: https://...`, `X-Tus-New-Offset: 10485760`, and an empty body.
+With the env var unset you'll get `X-Route: plone` regardless of input — the offload is off.
