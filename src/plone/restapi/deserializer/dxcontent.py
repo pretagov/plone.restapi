@@ -1,5 +1,6 @@
 from .mixins import OrderingMixin
 from AccessControl import getSecurityManager
+from logging import getLogger
 from plone.autoform.interfaces import WRITE_PERMISSIONS_KEY
 from plone.dexterity.interfaces import IDexterityContent
 from plone.dexterity.utils import iterSchemata
@@ -21,6 +22,9 @@ from zope.lifecycleevent import ObjectModifiedEvent
 from zope.schema import getFields
 from zope.schema.interfaces import ValidationError
 from zope.security.interfaces import IPermission
+
+
+logger = getLogger(__name__)
 
 
 @implementer(IDeserializeFromJson)
@@ -182,7 +186,15 @@ class DeserializeFromJson(OrderingMixin):
         if permission_name not in self.permission_cache:
             permission = queryUtility(IPermission, name=permission_name)
             if permission is None:
-                self.permission_cache[permission_name] = True
+                logger.warning(
+                    (
+                        "The permission %r was not found, forbidding access. "
+                        "Be sure to specify a properly registered permission id, "
+                        "e.g. zope2.View"
+                    ),
+                    permission_name,
+                )
+                self.permission_cache[permission_name] = False
             else:
                 self.permission_cache[permission_name] = bool(
                     self.sm.checkPermission(permission.title, self.context)

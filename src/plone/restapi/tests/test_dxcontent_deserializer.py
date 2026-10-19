@@ -112,6 +112,16 @@ class TestDXContentDeserializer(unittest.TestCase, OrderingMixin):
             "Test Write Permission", self.portal.doc1.test_write_permission_field
         )
 
+    def test_deserializer_denies_unknown_permission(self):
+        # GHSA-qp9m-v45c-4g3p: a permission title or unregistered id must not
+        # be treated as granted.
+        setRoles(self.portal, TEST_USER_ID, ["Manager"])
+        deserializer = getMultiAdapter(
+            (self.portal.doc1, self.request), IDeserializeFromJson
+        )
+        self.assertFalse(deserializer.check_permission("Modify portal content"))
+        self.assertTrue(deserializer.check_permission("cmf.ModifyPortalContent"))
+
     def test_deserializer_updates_field_with_write_permission(self):
         self.portal.doc1.test_write_permission_field = "Test Write Permission"
         setRoles(self.portal, TEST_USER_ID, ["Member", "Manager"])

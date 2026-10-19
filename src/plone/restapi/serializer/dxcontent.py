@@ -1,6 +1,7 @@
 from AccessControl import getSecurityManager
 from Acquisition import aq_inner
 from Acquisition import aq_parent
+from logging import getLogger
 from plone.autoform.interfaces import READ_PERMISSIONS_KEY
 from plone.dexterity.interfaces import IDexterityContainer
 from plone.dexterity.interfaces import IDexterityContent
@@ -30,6 +31,9 @@ from zope.interface import implementer
 from zope.interface import Interface
 from zope.schema import getFields
 from zope.security.interfaces import IPermission
+
+
+logger = getLogger(__name__)
 
 
 try:
@@ -151,7 +155,15 @@ class SerializeToJson:
         if permission_name not in self.permission_cache:
             permission = queryUtility(IPermission, name=permission_name)
             if permission is None:
-                self.permission_cache[permission_name] = True
+                logger.warning(
+                    (
+                        "The permission %r was not found, forbidding access. "
+                        "Be sure to specify a properly registered permission id, "
+                        "e.g. zope2.View"
+                    ),
+                    permission_name,
+                )
+                self.permission_cache[permission_name] = False
             else:
                 sm = getSecurityManager()
                 self.permission_cache[permission_name] = bool(
@@ -254,7 +266,15 @@ class DexterityObjectPrimaryFieldTarget:
         if permission_name not in self.permission_cache:
             permission = queryUtility(IPermission, name=permission_name)
             if permission is None:
-                self.permission_cache[permission_name] = True
+                logger.warning(
+                    (
+                        "The permission %r was not found, forbidding access. "
+                        "Be sure to specify a properly registered permission id, "
+                        "e.g. zope2.View"
+                    ),
+                    permission_name,
+                )
+                self.permission_cache[permission_name] = False
             else:
                 sm = getSecurityManager()
                 self.permission_cache[permission_name] = bool(

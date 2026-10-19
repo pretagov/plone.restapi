@@ -1,5 +1,6 @@
 from AccessControl import getSecurityManager
 from importlib import import_module
+from logging import getLogger
 from plone.autoform.interfaces import READ_PERMISSIONS_KEY
 from plone.dexterity.utils import iterSchemata
 from plone.restapi.batching import HypermediaBatch
@@ -26,6 +27,9 @@ from zope.schema import getFields
 from zope.security.interfaces import IPermission
 
 import json
+
+
+logger = getLogger(__name__)
 
 
 HAS_PLONE_6 = getattr(
@@ -138,7 +142,15 @@ class SerializeSiteRootToJson:
         if permission_name not in self.permission_cache:
             permission = queryUtility(IPermission, name=permission_name)
             if permission is None:
-                self.permission_cache[permission_name] = True
+                logger.warning(
+                    (
+                        "The permission %r was not found, forbidding access. "
+                        "Be sure to specify a properly registered permission id, "
+                        "e.g. zope2.View"
+                    ),
+                    permission_name,
+                )
+                self.permission_cache[permission_name] = False
             else:
                 sm = getSecurityManager()
                 self.permission_cache[permission_name] = bool(

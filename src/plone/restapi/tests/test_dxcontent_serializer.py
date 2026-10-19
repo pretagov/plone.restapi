@@ -151,6 +151,14 @@ class TestDXContentSerializer(unittest.TestCase):
         setRoles(self.portal, TEST_USER_ID, ["Member"])
         self.assertNotIn("test_read_permission_field", self.serialize())
 
+    def test_serializer_denies_unknown_permission(self):
+        # GHSA-qp9m-v45c-4g3p: a permission title or unregistered id must not
+        # be treated as granted.
+        setRoles(self.portal, TEST_USER_ID, ["Manager"])
+        serializer = getMultiAdapter((self.portal.doc1, self.request), ISerializeToJson)
+        self.assertFalse(serializer.check_permission("View", self.portal.doc1))
+        self.assertTrue(serializer.check_permission("zope2.View", self.portal.doc1))
+
     def test_serializer_includes_field_with_read_permission(self):
         setRoles(self.portal, TEST_USER_ID, ["Manager"])
         obj = self.serialize()
