@@ -124,8 +124,10 @@ class SerializeToJson:
                 value = serializer()
                 result[json_compatible(name)] = value
 
-        resolved_objects = annotations["plone.restapi.serializer.blocks.resolved_objects"]
-        result['resolved_uids'] = resolved_objects
+        resolved_objects = annotations[
+            "plone.restapi.serializer.blocks.resolved_objects"
+        ]
+        result["resolved_uids"] = resolved_objects
 
         target_url = getMultiAdapter(
             (self.context, self.request), IObjectPrimaryFieldTarget

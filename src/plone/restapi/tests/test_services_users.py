@@ -558,7 +558,6 @@ class TestUsersEndpoint(unittest.TestCase):
             portrait.content_type = "image/svg+xml"
             transaction.commit()
 
-
     def test_update_portrait_with_svg(self):
         self._update_portrait_with_svg()
 
