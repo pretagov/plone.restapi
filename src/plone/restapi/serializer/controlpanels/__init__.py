@@ -13,12 +13,12 @@ from zope.component import getUtility
 from zope.component import queryMultiAdapter
 from zope.interface import alsoProvides
 from zope.interface import implementer
-from zope.interface import noLongerProvides
 
 import zope.schema
 
 
 SERVICE_ID = "@controlpanels"
+
 
 # Same class is in deserializer. Should centralise it.
 @implementer(IDexterityContent, IBlocks)
@@ -100,7 +100,9 @@ class ControlpanelSerializeToJson:
             setattr(fake_context, name, getattr(proxy, name, None))
         alsoProvides(fake_context, self.schema)
 
-        wrapped_context = ImplicitAcquisitionWrapper(fake_context, self.controlpanel.context)
+        wrapped_context = ImplicitAcquisitionWrapper(
+            fake_context, self.controlpanel.context
+        )
 
         json_data = {}
         for name, field in zope.schema.getFields(self.schema).items():
@@ -112,8 +114,6 @@ class ControlpanelSerializeToJson:
             else:
                 value = getattr(proxy, name, None)
             json_data[json_compatible(name)] = value
-
-        noLongerProvides(fake_context, self.schema)
 
         # JSON schema
         return {
