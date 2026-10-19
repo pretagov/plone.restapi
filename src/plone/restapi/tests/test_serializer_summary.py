@@ -130,6 +130,19 @@ class TestSummarySerializers(unittest.TestCase):
             summary,
         )
 
+    def test_brain_summary_rejects_non_metadata_fields(self):
+        # GHSA-r3g9-vgf8-vv35: attributes that are not catalog metadata must
+        # not be looked up (and called) on the underlying object.
+        brain = self.catalog(UID=self.doc1.UID())[0]
+        self.request.form.update(
+            {"metadata_fields": ["UID", "getPhysicalPath", "reindexObject"]}
+        )
+        summary = getMultiAdapter((brain, self.request), ISerializeToJsonSummary)()
+
+        self.assertIn("UID", summary)
+        self.assertNotIn("getPhysicalPath", summary)
+        self.assertNotIn("reindexObject", summary)
+
     def test_brain_summary_includes_all_metadata_fields(self):
         brain = self.catalog(UID=self.doc1.UID())[0]
         self.request.form.update({"metadata_fields": "_all"})
