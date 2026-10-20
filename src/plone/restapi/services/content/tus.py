@@ -20,6 +20,7 @@ from Products.CMFCore.utils import getToolByName
 from tempfile import mkstemp
 from uuid import uuid4
 from zExceptions import Unauthorized
+from ZODB.blob import rename_or_copy_blob
 from zope.annotation.interfaces import IAnnotations
 from zope.component import queryMultiAdapter
 from zope.event import notify
@@ -28,7 +29,6 @@ from zope.interface import implementer
 from zope.lifecycleevent import ObjectCreatedEvent
 from zope.publisher.interfaces import IPublishTraverse
 from zope.publisher.interfaces import NotFound
-from ZODB.blob import rename_or_copy_blob
 
 import json
 import logging

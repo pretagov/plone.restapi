@@ -23,7 +23,7 @@ SERVICE_ID = "@controlpanels"
 # Same class is in deserializer. Should centralise it.
 @implementer(IDexterityContent, IBlocks)
 class FakeDXContext:
-    """Fake DX content class, so we can re-use the DX field serializers"""
+    """Fake DX content class, so we can reuse the DX field serializers"""
 
 
 @implementer(ISerializeToJsonSummary)

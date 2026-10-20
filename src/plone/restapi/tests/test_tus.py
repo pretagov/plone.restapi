@@ -905,10 +905,8 @@ class TestS3TUSUpload(unittest.TestCase):
         )
 
     def test_initialization_creates_multipart_and_writes_annotation(self):
-        from plone.restapi.services.content.tus import (
-            ANNOTATION_KEY,
-            _container_uploads,
-        )
+        from plone.restapi.services.content.tus import _container_uploads
+        from plone.restapi.services.content.tus import ANNOTATION_KEY
 
         self._make_upload(uid="uid-1")
         # Multipart created with deterministic staging key
@@ -1077,9 +1075,7 @@ class TestS3TUSUpload(unittest.TestCase):
         self.assertIn(("tus-staging/old", "mpu-1"), self.s3._aborted)
 
     def tearDown(self):
-        from plone.restapi.services.content.tus import (
-            ANNOTATION_KEY,
-        )
+        from plone.restapi.services.content.tus import ANNOTATION_KEY
 
         ann = IAnnotations(self.folder)
         if ANNOTATION_KEY in ann:
@@ -1308,10 +1304,8 @@ class TestTUSLifecycleAutoApply(unittest.TestCase):
         self.s3 = FakeS3Client(bucket_name="bucket-a")
 
     def test_first_call_applies_and_marks_bucket(self):
-        from plone.restapi.services.content.tus import (
-            _ensure_lifecycle_rule_once,
-            _LIFECYCLE_APPLIED,
-        )
+        from plone.restapi.services.content.tus import _ensure_lifecycle_rule_once
+        from plone.restapi.services.content.tus import _LIFECYCLE_APPLIED
 
         _ensure_lifecycle_rule_once(self.s3)
         self.assertEqual(self.s3._lifecycle_get_calls, 1)
@@ -1319,9 +1313,7 @@ class TestTUSLifecycleAutoApply(unittest.TestCase):
         self.assertIn("bucket-a", _LIFECYCLE_APPLIED)
 
     def test_second_call_is_a_noop(self):
-        from plone.restapi.services.content.tus import (
-            _ensure_lifecycle_rule_once,
-        )
+        from plone.restapi.services.content.tus import _ensure_lifecycle_rule_once
 
         _ensure_lifecycle_rule_once(self.s3)
         _ensure_lifecycle_rule_once(self.s3)
@@ -1331,10 +1323,8 @@ class TestTUSLifecycleAutoApply(unittest.TestCase):
         self.assertEqual(self.s3._lifecycle_put_calls, 1)
 
     def test_failure_is_swallowed_and_bucket_still_marked(self):
-        from plone.restapi.services.content.tus import (
-            _ensure_lifecycle_rule_once,
-            _LIFECYCLE_APPLIED,
-        )
+        from plone.restapi.services.content.tus import _ensure_lifecycle_rule_once
+        from plone.restapi.services.content.tus import _LIFECYCLE_APPLIED
 
         self.s3._lifecycle_get_raises = RuntimeError("boom")
         # Should not raise; should still record the bucket so subsequent
@@ -1343,9 +1333,7 @@ class TestTUSLifecycleAutoApply(unittest.TestCase):
         self.assertIn("bucket-a", _LIFECYCLE_APPLIED)
 
     def test_separate_buckets_are_each_handled_once(self):
-        from plone.restapi.services.content.tus import (
-            _ensure_lifecycle_rule_once,
-        )
+        from plone.restapi.services.content.tus import _ensure_lifecycle_rule_once
 
         s3_b = FakeS3Client(bucket_name="bucket-b")
         _ensure_lifecycle_rule_once(self.s3)
