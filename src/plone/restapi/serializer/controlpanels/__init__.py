@@ -1,5 +1,7 @@
+from Acquisition import ImplicitAcquisitionWrapper
 from plone.dexterity.interfaces import IDexterityContent
 from plone.registry.interfaces import IRegistry
+from plone.restapi.behaviors import IBlocks
 from plone.restapi.controlpanels import IControlpanel
 from plone.restapi.interfaces import IFieldSerializer
 from plone.restapi.interfaces import ISerializeToJson
@@ -11,12 +13,17 @@ from zope.component import getUtility
 from zope.component import queryMultiAdapter
 from zope.interface import alsoProvides
 from zope.interface import implementer
-from zope.interface import noLongerProvides
 
 import zope.schema
 
 
 SERVICE_ID = "@controlpanels"
+
+
+# Same class is in deserializer. Should centralise it.
+@implementer(IDexterityContent, IBlocks)
+class FakeDXContext:
+    """Fake DX content class, so we can re-use the DX field serializers"""
 
 
 @implementer(ISerializeToJsonSummary)
@@ -96,22 +103,28 @@ class ControlpanelSerializeToJson:
 
             proxy = self.registry.forInterface(self.schema, prefix=self.schema_prefix)
 
-            # Temporarily provide IDexterityContent, so we can use DX field
-            # serializers
-            alsoProvides(proxy, IDexterityContent)
+            # Make a fake context and copy registry values onto it, so that
+            # the DX field and block serializers can adapt it
+            fake_context = FakeDXContext()
+            for name in zope.schema.getFields(self.schema).keys():
+                setattr(fake_context, name, getattr(proxy, name, None))
+            alsoProvides(fake_context, self.schema)
+
+            wrapped_context = ImplicitAcquisitionWrapper(
+                fake_context, self.controlpanel.context
+            )
 
             json_data = {}
             for name, field in zope.schema.getFields(self.schema).items():
                 serializer = queryMultiAdapter(
-                    (field, proxy, self.controlpanel.request), IFieldSerializer
+                    (field, wrapped_context, self.controlpanel.request),
+                    IFieldSerializer,
                 )
                 if serializer:
                     value = serializer()
                 else:
                     value = getattr(proxy, name, None)
                 json_data[json_compatible(name)] = value
-
-            noLongerProvides(proxy, IDexterityContent)
 
             result["data"] = json_data
 

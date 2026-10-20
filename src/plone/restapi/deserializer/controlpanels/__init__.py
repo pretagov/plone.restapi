@@ -1,5 +1,7 @@
+from Acquisition import ImplicitAcquisitionWrapper
 from plone.dexterity.interfaces import IDexterityContent
 from plone.registry.interfaces import IRegistry
+from plone.restapi.behaviors import IBlocks
 from plone.restapi.controlpanels import IControlpanel
 from plone.restapi.deserializer import json_body
 from plone.restapi.interfaces import IDeserializeFromJson
@@ -16,7 +18,7 @@ from zope.schema import getFields
 from zope.schema.interfaces import ValidationError
 
 
-@implementer(IDexterityContent)
+@implementer(IDexterityContent, IBlocks)
 class FakeDXContext:
     """Fake DX content class, so we can reuse the DX field deserializers"""
 
@@ -47,6 +49,7 @@ class ControlpanelDeserializeFromJson:
 
         # Make a fake context
         fake_context = FakeDXContext()
+        wrapped_context = ImplicitAcquisitionWrapper(fake_context, self.context)
 
         for name, field in getFields(self.schema).items():
             field_data = schema_data.setdefault(self.schema, {})
@@ -56,7 +59,7 @@ class ControlpanelDeserializeFromJson:
 
             if name in data:
                 deserializer = queryMultiAdapter(
-                    (field, fake_context, self.request), IFieldDeserializer
+                    (field, wrapped_context, self.request), IFieldDeserializer
                 )
 
                 try:
