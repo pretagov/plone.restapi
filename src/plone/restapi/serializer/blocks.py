@@ -14,6 +14,7 @@ from plone.restapi.serializer.dxfields import DefaultFieldSerializer
 from plone.restapi.serializer.utils import resolve_uid
 from plone.restapi.serializer.utils import uid_to_url
 from plone.schema import IJSONField
+from zope.annotation.interfaces import IAnnotations
 from zope.component import adapter
 from zope.component import getMultiAdapter
 from zope.interface import implementer
@@ -64,9 +65,23 @@ class ResolveUIDSerializerBase:
     def __call__(self, block):
         return self._process_data(block)
 
+    def _record_resolved(self, url, brain):
+        # The content and site serializers create this mapping and return it
+        # as "resolved_uids". Blocks can also be serialized outside them (e.g.
+        # control panels, or the field serializer on its own), so create it
+        # if it is missing.
+        summary = getMultiAdapter((brain, self.request), ISerializeToJsonSummary)()
+        resolved = IAnnotations(self.request).setdefault(
+            "plone.restapi.serializer.blocks.resolved_objects", {}
+        )
+        resolved[url] = summary
+
     def _process_data(self, data, field=None):
         if isinstance(data, str) and field in self.fields:
-            return uid_to_url(data)
+            resolved_uid, brain = resolve_uid(data)
+            if brain is not None:
+                self._record_resolved(resolved_uid, brain)
+            return resolved_uid
         if isinstance(data, list):
             return [self._process_data(data=value, field=field) for value in data]
         if isinstance(data, dict):
@@ -82,6 +97,10 @@ class ResolveUIDSerializerBase:
                     newdata["image_scales"] = json_compatible(
                         getattr(brain, "image_scales", None)
                     )
+
+                if brain is not None and newdata[field] != data[field]:
+                    self._record_resolved(newdata[field], brain)
+
             result = {
                 field: (
                     newdata[field]

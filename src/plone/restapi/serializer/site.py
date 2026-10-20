@@ -15,6 +15,7 @@ from plone.restapi.serializer.schema import _check_permission
 from plone.restapi.serializer.utils import get_portal_type_title
 from plone.restapi.services.locking import lock_info
 from Products.CMFCore.utils import getToolByName
+from zope.annotation.interfaces import IAnnotations
 from zope.component import adapter
 from zope.component import getMultiAdapter
 from zope.interface import implementer
@@ -63,6 +64,10 @@ class SerializeSiteRootToJson:
         # Insert working copy information
         update_with_working_copy_info(self.context, result)
 
+        # Start a key to map data about all resolved UID objects
+        annotations = IAnnotations(self.request)
+        annotations["plone.restapi.serializer.blocks.resolved_objects"] = {}
+
         if HAS_PLONE_6:
             result["UID"] = self.context.UID()
             result["layout"] = self.context.getLayout()
@@ -92,6 +97,11 @@ class SerializeSiteRootToJson:
                     ),
                 }
             )
+
+        resolved_objects = annotations[
+            "plone.restapi.serializer.blocks.resolved_objects"
+        ]
+        result["resolved_uids"] = resolved_objects
 
         # Insert expandable elements
         if include_expansion:
