@@ -271,8 +271,6 @@ class NamedFieldDeserializer(DefaultFieldDeserializer):
         else:
             value = None
 
-        
-
         # Always validate to check for required fields
         self.field.validate(value)
 

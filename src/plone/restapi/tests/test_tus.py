@@ -84,9 +84,7 @@ class TestTUS(unittest.TestCase):
         headers = response.headers
         self.assertEqual(response.status_code, 204)
         self.assertEqual(headers["Tus-Version"], "1.0.0")
-        self.assertEqual(
-            headers["Tus-Extension"], "creation,expiration,termination"
-        )
+        self.assertEqual(headers["Tus-Extension"], "creation,expiration,termination")
         self.assertEqual(headers["Tus-Resumable"], "1.0.0")
 
     def test_tus_post_without_version_header_returns_412(self):
@@ -817,9 +815,7 @@ class FakeS3Client:
                 "ID": rule_id,
                 "Status": "Enabled",
                 "Filter": {"Prefix": prefix},
-                "AbortIncompleteMultipartUpload": {
-                    "DaysAfterInitiation": days
-                },
+                "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": days},
                 "Expiration": {"Days": days},
             }
         )
@@ -914,7 +910,7 @@ class TestS3TUSUpload(unittest.TestCase):
             _container_uploads,
         )
 
-        tus = self._make_upload(uid="uid-1")
+        self._make_upload(uid="uid-1")
         # Multipart created with deterministic staging key
         self.assertEqual(self.s3._uploads, {"tus-staging/uid-1": "mpu-1"})
         # Annotation written
@@ -1027,9 +1023,7 @@ class TestS3TUSUpload(unittest.TestCase):
         # Final small chunk
         tus.write(BytesIO(b"c" * 100), offset=2 * chunk, content_length=100)
         self.assertTrue(tus.finished)
-        self.assertIn(
-            ("tus-staging/finish", "mpu-1"), self.s3._completed
-        )
+        self.assertIn(("tus-staging/finish", "mpu-1"), self.s3._completed)
 
     def test_complete_with_missing_parts_raises_409(self):
         from plone.restapi.services.content.tus import TUSUploadError
@@ -1054,9 +1048,7 @@ class TestS3TUSUpload(unittest.TestCase):
 
         tus = self._make_upload(uid="abort")
         tus.cleanup()
-        self.assertIn(
-            ("tus-staging/abort", "mpu-1"), self.s3._aborted
-        )
+        self.assertIn(("tus-staging/abort", "mpu-1"), self.s3._aborted)
         self.assertNotIn("abort", _container_uploads(self.folder))
 
     def test_cleanup_finished_does_not_abort(self):
@@ -1068,9 +1060,7 @@ class TestS3TUSUpload(unittest.TestCase):
         # Simulate handoff completing before cleanup
         tus._handoff_done = True
         tus.cleanup()
-        self.assertNotIn(
-            ("tus-staging/ok", "mpu-1"), self.s3._aborted
-        )
+        self.assertNotIn(("tus-staging/ok", "mpu-1"), self.s3._aborted)
 
     def test_cleanup_expired_removes_old_entries(self):
         from plone.restapi.services.content.tus import _container_uploads
@@ -1079,16 +1069,12 @@ class TestS3TUSUpload(unittest.TestCase):
         tus_new = self._make_upload(uid="new")
         # Backdate "old" past the expiration period.
         uploads = _container_uploads(self.folder)
-        uploads["old"]["last_active"] = (
-            time.time() - tus_old.expiration_period - 1
-        )
+        uploads["old"]["last_active"] = time.time() - tus_old.expiration_period - 1
         # Triggering cleanup_expired through any S3TUSUpload instance.
         tus_new.cleanup_expired()
         self.assertNotIn("old", _container_uploads(self.folder))
         self.assertIn("new", _container_uploads(self.folder))
-        self.assertIn(
-            ("tus-staging/old", "mpu-1"), self.s3._aborted
-        )
+        self.assertIn(("tus-staging/old", "mpu-1"), self.s3._aborted)
 
     def tearDown(self):
         from plone.restapi.services.content.tus import (
@@ -1264,15 +1250,9 @@ class TestUploadAuthorize(unittest.TestCase):
             },
         )
         self.assertEqual(response.headers.get("X-Route"), "s3")
-        self.assertIn(
-            "tus-staging/uid2", response.headers.get("X-S3-Url", "")
-        )
-        self.assertIn(
-            "partNumber=1", response.headers.get("X-S3-Url", "")
-        )
-        self.assertEqual(
-            response.headers.get("X-Tus-New-Offset"), str(chunk)
-        )
+        self.assertIn("tus-staging/uid2", response.headers.get("X-S3-Url", ""))
+        self.assertIn("partNumber=1", response.headers.get("X-S3-Url", ""))
+        self.assertEqual(response.headers.get("X-Tus-New-Offset"), str(chunk))
         self.assertEqual(response.headers.get("X-Tus-Part-Number"), "1")
 
     def test_subsequent_chunk_uses_correct_part_number(self):
@@ -1286,12 +1266,8 @@ class TestUploadAuthorize(unittest.TestCase):
             },
         )
         self.assertEqual(response.headers.get("X-Tus-Part-Number"), "2")
-        self.assertIn(
-            "partNumber=2", response.headers.get("X-S3-Url", "")
-        )
-        self.assertEqual(
-            response.headers.get("X-Tus-New-Offset"), str(2 * chunk)
-        )
+        self.assertIn("partNumber=2", response.headers.get("X-S3-Url", ""))
+        self.assertEqual(response.headers.get("X-Tus-New-Offset"), str(2 * chunk))
 
     def test_final_chunk_routes_to_plone(self):
         chunk = 10 * 1024 * 1024
@@ -1306,9 +1282,7 @@ class TestUploadAuthorize(unittest.TestCase):
             },
         )
         self.assertEqual(response.headers.get("X-Route"), "plone")
-        self.assertEqual(
-            response.headers.get("X-Tus-Authorize-Reason"), "final-chunk"
-        )
+        self.assertEqual(response.headers.get("X-Tus-Authorize-Reason"), "final-chunk")
 
     def test_misaligned_offset_rejected(self):
         chunk = 10 * 1024 * 1024

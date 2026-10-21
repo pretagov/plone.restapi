@@ -114,8 +114,10 @@ class SerializeSiteRootToJson:
                 }
             )
 
-        resolved_objects = annotations["plone.restapi.serializer.blocks.resolved_objects"]
-        result['resolved_uids'] = resolved_objects
+        resolved_objects = annotations[
+            "plone.restapi.serializer.blocks.resolved_objects"
+        ]
+        result["resolved_uids"] = resolved_objects
 
         # Insert expandable elements
         result.update(expandable_elements(self.context, self.request))

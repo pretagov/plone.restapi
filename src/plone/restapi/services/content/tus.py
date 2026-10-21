@@ -70,6 +70,7 @@ def _s3_offload_enabled():
         "on",
     )
 
+
 # Process-local set of bucket names already checked / had the rule applied
 # during this process's lifetime. Auto-apply runs at most once per bucket
 # per process, regardless of success — never block uploads on lifecycle.
@@ -135,9 +136,7 @@ def _resolve_s3_blob_storage(context):
             type(storage).__name__,
         )
         return None
-    logger.debug(
-        "TUS/S3: resolved per-connection S3BlobStorage id=%s", id(storage)
-    )
+    logger.debug("TUS/S3: resolved per-connection S3BlobStorage id=%s", id(storage))
     return storage, storage._s3_client
 
 
@@ -429,9 +428,7 @@ class UploadPatch(UploadFileBase):
         if hasattr(request_body, "raw"):  # Unwrap io.BufferedRandom
             request_body = request_body.raw
         try:
-            tus_upload.write(
-                request_body, offset, content_length=content_length
-            )
+            tus_upload.write(request_body, offset, content_length=content_length)
         except TUSUploadError as e:
             return self.error(e.error_type, str(e), e.status)
         offset = tus_upload.offset()
@@ -875,9 +872,7 @@ class S3TUSUpload(TUSUpload):
     file_prefix = TUSUpload.file_prefix
     expiration_period = TUSUpload.expiration_period
 
-    def __init__(
-        self, uid, container, metadata=None, s3_storage=None, s3_client=None
-    ):
+    def __init__(self, uid, container, metadata=None, s3_storage=None, s3_client=None):
         # Deliberately bypass TUSUpload.__init__ — it creates a tmp dir we
         # don't need. Set the minimum attributes the parent class methods
         # might still touch.
@@ -1042,9 +1037,7 @@ class S3TUSUpload(TUSUpload):
         chunk_size = entry.get("chunk_size")
 
         if content_length is None:
-            raise TUSUploadError(
-                "Missing or invalid Content-Length header for PATCH"
-            )
+            raise TUSUploadError("Missing or invalid Content-Length header for PATCH")
 
         is_final = (offset + content_length) >= length
         if chunk_size is None:
@@ -1187,11 +1180,7 @@ class S3TUSUpload(TUSUpload):
                         self.uid,
                         exc_info=True,
                     )
-            if (
-                self.finished
-                and not self._handoff_done
-                and self._s3_client is not None
-            ):
+            if self.finished and not self._handoff_done and self._s3_client is not None:
                 # Completed S3 upload but handoff to ZODB blob never ran.
                 # Leave the orphan for the lifecycle rule to clean up rather
                 # than risk deleting a key the storage might end up
@@ -1244,15 +1233,11 @@ class S3TUSUpload(TUSUpload):
         S3 key the blob's bytes actually live at.
         """
         if self._s3_storage is None:
-            raise RuntimeError(
-                "S3TUSUpload missing storage reference at handoff"
-            )
+            raise RuntimeError("S3TUSUpload missing storage reference at handoff")
         size = self.length()
         entry = self._entry()
         staging_key = entry.get("staging_key")
-        marker_content = (
-            f"S3BLOB-STAGED\n{staging_key}\n{size}\n".encode()
-        )
+        marker_content = f"S3BLOB-STAGED\n{staging_key}\n{size}\n".encode()
         # Use a uniquely-named tempfile so two concurrent uploads in the same
         # process never race on the marker source path.
         fd, marker_source = mkstemp(prefix="tus-marker-", suffix=".bin")
@@ -1275,5 +1260,3 @@ class S3TUSUpload(TUSUpload):
             target_path,
             id(self._s3_storage),
         )
-
-

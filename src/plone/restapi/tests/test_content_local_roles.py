@@ -584,19 +584,38 @@ class TestFolderCreate(unittest.TestCase):
         # This test unregisters the local_roles adapter. The testrunner can
         # not auto-revert this on test tearDown. Therefore if we ever run
         # into test isolation issues. Start to look here first.
-        gsm = getGlobalSiteManager()
-        gsm.unregisterAdapter(SerializeLocalRolesToJson, name="local_roles")
+        #
+        # Test layers stack global registries, and the adapter may live in a
+        # lower one than getGlobalSiteManager() returns, where unregistering
+        # would silently do nothing. Find the registry that holds it.
+        registry = None
+        pending = [getGlobalSiteManager()]
+        while pending and registry is None:
+            candidate = pending.pop(0)
+            for reg in candidate.registeredAdapters():
+                if (
+                    reg.name == "local_roles"
+                    and reg.factory is SerializeLocalRolesToJson
+                ):
+                    registry = candidate
+                    break
+            pending.extend(candidate.__bases__)
+        self.assertIsNotNone(registry)
 
-        response = requests.get(
-            self.portal.folder1.absolute_url() + "/@sharing",
-            headers={"Accept": "application/json"},
-            auth=(SITE_OWNER_NAME, SITE_OWNER_PASSWORD),
+        self.assertTrue(
+            registry.unregisterAdapter(SerializeLocalRolesToJson, name="local_roles")
         )
+        try:
+            response = requests.get(
+                self.portal.folder1.absolute_url() + "/@sharing",
+                headers={"Accept": "application/json"},
+                auth=(SITE_OWNER_NAME, SITE_OWNER_PASSWORD),
+            )
+        finally:
+            # we need to re-register the adapter here for following tests
+            registry.registerAdapter(SerializeLocalRolesToJson, name="local_roles")
 
         self.assertEqual(response.status_code, 501)
         response = response.json()
         self.assertIn("error", response)
         self.assertEqual("No serializer available.", response["error"]["message"])
-
-        # we need to re-register the adapter here for following tests
-        gsm.registerAdapter(SerializeLocalRolesToJson, name="local_roles")
