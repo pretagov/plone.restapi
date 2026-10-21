@@ -7,10 +7,12 @@ from plone.namedfile.file import NamedBlobImage
 from plone.restapi.behaviors import IBlocks
 from plone.restapi.interfaces import IBlockFieldSerializationTransformer
 from plone.restapi.interfaces import IFieldSerializer
+from plone.restapi.interfaces import ISerializeToJson
 from plone.restapi.testing import PLONE_RESTAPI_DX_INTEGRATION_TESTING
 from plone.uuid.interfaces import IUUID
 from Products.CMFCore.utils import getToolByName
 from z3c.form.interfaces import IDataManager
+from zope.annotation.interfaces import IAnnotations
 from zope.component import adapter
 from zope.component import getGlobalSiteManager
 from zope.component import getMultiAdapter
@@ -638,3 +640,42 @@ class TestBlocksSerializer(unittest.TestCase):
         self.assertEqual(block["description"], "Custom description")
         href = block["href"][0]
         self.assertEqual(href["@id"], doc.absolute_url())
+
+    def test_resolved_uids_recorded_for_block_links(self):
+        doc = self.portal["doc1"]
+        self.serialize(
+            context=doc,
+            blocks={
+                "1": {
+                    "@type": "teaser",
+                    "href": [{"@id": f"../resolveuid/{doc.UID()}"}],
+                },
+                "2": {"@type": "image", "url": f"../resolveuid/{self.image.UID()}"},
+                "3": {"@type": "teaser", "href": [{"@id": "../resolveuid/missing"}]},
+            },
+        )
+
+        resolved = IAnnotations(self.request)[
+            "plone.restapi.serializer.blocks.resolved_objects"
+        ]
+        self.assertEqual(
+            sorted(resolved), sorted([doc.absolute_url(), self.image.absolute_url()])
+        )
+        self.assertEqual(resolved[doc.absolute_url()]["@id"], doc.absolute_url())
+        self.assertEqual(resolved[self.image.absolute_url()]["title"], "Target image")
+
+    def test_content_serializer_returns_resolved_uids(self):
+        doc = self.portal["doc1"]
+        self.serialize(
+            context=doc,
+            blocks={
+                "1": {"@type": "image", "url": f"../resolveuid/{self.image.UID()}"}
+            },
+        )
+
+        result = getMultiAdapter((doc, self.request), ISerializeToJson)()
+
+        self.assertEqual(list(result["resolved_uids"]), [self.image.absolute_url()])
+        self.assertEqual(
+            result["resolved_uids"][self.image.absolute_url()]["@type"], "Image"
+        )

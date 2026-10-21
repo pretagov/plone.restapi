@@ -246,6 +246,7 @@ class NamedFieldDeserializer(DefaultFieldDeserializer):
     def __call__(self, value):
         content_type = "application/octet-stream"
         filename = None
+        tus = None
         if isinstance(value, dict):
             if "data" not in value:
                 # We are probably pushing the contents of a previous GET
@@ -265,7 +266,9 @@ class NamedFieldDeserializer(DefaultFieldDeserializer):
         elif isinstance(value, TUSUpload):
             content_type = value.metadata().get("content-type", content_type)
             filename = value.metadata().get("filename", filename)
-            data = value.open()
+            # Put an single byte in place. Blob file is moved below.
+            data = b"0"
+            tus = value
         else:
             data = value
 
@@ -279,6 +282,20 @@ class NamedFieldDeserializer(DefaultFieldDeserializer):
 
         # Always validate to check for required fields
         self.field.validate(value)
+
+        # If it is a TUS upload, we rename the temporary file to the temp blob
+        # file. If the two files are on the same disk volume this will be a
+        # very quick operation
+        if tus:
+            tus.process_blob(value._blob)
+            # The NamedBlobFile was constructed with a 1-byte placeholder and
+            # may have had its ``size`` cached on __dict__ during validation.
+            # In S3 mode the on-disk blob is a tiny marker, not the real
+            # bytes, so without this override ``value.size`` would be pickled
+            # as the marker length. Prime the cache with the true length so
+            # the persisted size matches the uploaded file.
+            value.__dict__["size"] = tus.length()
+
         return value
 
 
