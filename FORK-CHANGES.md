@@ -19,15 +19,17 @@ Update this file in every PR that changes the fork's behaviour.
 
 ## Summary
 
-| Area | Change | Main files | Upstream status |
-|---|---|---|---|
-| TUS | Finished uploads are moved into the blob store instead of being copied | `deserializer/dxfields.py`, `services/content/tus.py` | Fork only |
-| TUS | `DELETE @tus-upload/<uid>` cancels an upload (TUS `termination` extension) | `services/content/tus.py`, `services/content/configure.zcml` | Fork only |
-| TUS | With a `zodb_s3blobs.S3BlobStorage` ZODB storage, chunks are streamed into an S3 multipart upload instead of a temporary file | `services/content/tus.py` | Fork only |
-| TUS | `GET @tus-authorize/<uid>` lets a reverse proxy send chunks straight to S3 (optional, off by default) | `services/content/tus.py`, `services/content/configure.zcml` | Fork only |
-| Blocks | Content and site responses include `resolved_uids`, a summary of every object linked from blocks | `serializer/blocks.py`, `serializer/dxcontent.py`, `serializer/site.py`, `serializer/utils.py` | Fork only |
-| Control panels | Fields are serialized and deserialized with the DX field and block serializers | `serializer/controlpanels/__init__.py`, `deserializer/controlpanels/__init__.py` | Open upstream as [plone/plone.restapi#1875](https://github.com/plone/plone.restapi/pull/1875) |
-| Packaging | Version `9.15.8.dev0` and a changelog entry in `news/` | `setup.py`, `news/+pretagov.feature` | Fork only |
+| Area | Change | Main files | Upstream status | Fork PRs |
+|---|---|---|---|---|
+| TUS | Finished uploads are moved into the blob store instead of being copied | `deserializer/dxfields.py`, `services/content/tus.py` | Fork only | [#6](https://github.com/pretagov/plone.restapi/pull/6); first added in [`d8933533`](https://github.com/pretagov/plone.restapi/commit/d8933533474afb7f697a4f3151864949378216de) to [`a5ae68f4`](https://github.com/pretagov/plone.restapi/commit/a5ae68f4a4c7836bddde3f2226a3b30d500c8697) (pushed without a PR) |
+| TUS | `DELETE @tus-upload/<uid>` cancels an upload (TUS `termination` extension) | `services/content/tus.py`, `services/content/configure.zcml` | Fork only | [#2](https://github.com/pretagov/plone.restapi/pull/2), [#6](https://github.com/pretagov/plone.restapi/pull/6) |
+| TUS | With a `zodb_s3blobs.S3BlobStorage` ZODB storage, chunks are streamed into an S3 multipart upload instead of a temporary file | `services/content/tus.py` | Fork only | [#2](https://github.com/pretagov/plone.restapi/pull/2), [#5](https://github.com/pretagov/plone.restapi/pull/5), [#6](https://github.com/pretagov/plone.restapi/pull/6), [#7](https://github.com/pretagov/plone.restapi/pull/7) (open) |
+| TUS | `GET @tus-authorize/<uid>` lets a reverse proxy send chunks straight to S3 (optional, off by default) | `services/content/tus.py`, `services/content/configure.zcml` | Fork only | [#2](https://github.com/pretagov/plone.restapi/pull/2), [#6](https://github.com/pretagov/plone.restapi/pull/6) |
+| Blocks | Content and site responses include `resolved_uids`, a summary of every object linked from blocks | `serializer/blocks.py`, `serializer/dxcontent.py`, `serializer/site.py`, `serializer/utils.py` | Fork only | [#1](https://github.com/pretagov/plone.restapi/pull/1), [#5](https://github.com/pretagov/plone.restapi/pull/5), [#6](https://github.com/pretagov/plone.restapi/pull/6) |
+| Control panels | Fields are serialized and deserialized with the DX field and block serializers | `serializer/controlpanels/__init__.py`, `deserializer/controlpanels/__init__.py` | Open upstream as [plone/plone.restapi#1875](https://github.com/plone/plone.restapi/pull/1875) | [`c1dc83cf`](https://github.com/pretagov/plone.restapi/commit/c1dc83cf6ba76f379aa0851eb74638227b47eece) and [`ed372f95`](https://github.com/pretagov/plone.restapi/commit/ed372f951ca1f0ed053c1c8d179ce8891e48209b) (pushed without a PR), [#5](https://github.com/pretagov/plone.restapi/pull/5), [#6](https://github.com/pretagov/plone.restapi/pull/6) |
+| Packaging | Version `9.15.8.dev0` and a changelog entry in `news/` | `setup.py`, `news/+pretagov.feature` | Fork only | [#6](https://github.com/pretagov/plone.restapi/pull/6) |
+
+Every change was first made on the old 8.x `deploy` branch, then re-applied onto 9.15.7 in [#6](https://github.com/pretagov/plone.restapi/pull/6). [#5](https://github.com/pretagov/plone.restapi/pull/5) fixed bugs in the `resolved_uids` and control panel changes.
 
 Every change has tests in `tests/test_tus.py` or `tests/test_blocks_serializer.py`. The TUS endpoint docs (`docs/source/endpoints/tusupload.md`) cover the S3 mode, the abandoned-upload lifecycle rule and the proxy offload.
 
