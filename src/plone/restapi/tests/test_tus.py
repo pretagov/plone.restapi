@@ -22,6 +22,7 @@ from zope.publisher.interfaces.browser import IBrowserRequest
 
 import os
 import shutil
+import sys
 import tempfile
 import time
 import transaction
@@ -917,6 +918,9 @@ class TestS3TUSUpload(unittest.TestCase):
         # Sanity: ANNOTATION_KEY is the right place
         self.assertIn(ANNOTATION_KEY, IAnnotations(self.folder))
 
+    @unittest.skipIf(
+        sys.version_info < (3, 12), "zodb-s3blobs needs Python 3.12 or later"
+    )
     def test_process_blob_writes_marker_the_storage_accepts(self):
         from ZODB.blob import Blob
         from zodb_s3blobs.storage import _parse_staged_marker
