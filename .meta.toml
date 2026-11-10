@@ -28,6 +28,9 @@ test_matrix = { "6.1" = [
 test_environment_variables = """
     zope_i18n_compile_mo_files=True
 """
+test_deps_additional = """
+    zodb-s3blobs @ git+https://github.com/pretagov/zodb-s3blobs@tus-uploads-s3 ; python_version >= "3.12"
+"""
 constraints_files = { "6.1" = "https://dist.plone.org/release/6.1-dev/constraints.txt", "6.0" = "https://dist.plone.org/release/6.0-dev/constraints.txt", "5.2" = "constraints-5.2.txt" }
 
 

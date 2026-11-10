@@ -22,6 +22,7 @@ from zope.publisher.interfaces.browser import IBrowserRequest
 
 import os
 import shutil
+import sys
 import tempfile
 import time
 import transaction
@@ -855,13 +856,7 @@ class FakeS3Client:
 
 
 class FakeS3Storage:
-    """Minimal stand-in for S3BlobStorage.register_staged_s3_key."""
-
-    def __init__(self):
-        self.registered = []
-
-    def register_staged_s3_key(self, blob_path, staging_key, size):
-        self.registered.append((blob_path, staging_key, size))
+    """Stand-in for S3BlobStorage: the handoff only needs it to be set."""
 
 
 class TestS3TUSUpload(unittest.TestCase):
@@ -922,6 +917,24 @@ class TestS3TUSUpload(unittest.TestCase):
         self.assertIsNone(entry["chunk_size"])
         # Sanity: ANNOTATION_KEY is the right place
         self.assertIn(ANNOTATION_KEY, IAnnotations(self.folder))
+
+    @unittest.skipIf(
+        sys.version_info < (3, 12), "zodb-s3blobs needs Python 3.12 or later"
+    )
+    def test_process_blob_writes_marker_the_storage_accepts(self):
+        from ZODB.blob import Blob
+        from zodb_s3blobs.storage import _parse_staged_marker
+
+        tus = self._make_upload(uid="0123abcd", length=12345)
+        blob = Blob()
+        with blob.open("w") as f:
+            f.write(b"placeholder")
+        tus.process_blob(blob)
+
+        self.assertEqual(
+            _parse_staged_marker(blob._p_blob_uncommitted), "tus-staging/0123abcd"
+        )
+        self.assertTrue(tus._handoff_done)
 
     def test_metadata_and_length_read_from_annotation(self):
         tus = self._make_upload(filename="report.pdf", length=12345)

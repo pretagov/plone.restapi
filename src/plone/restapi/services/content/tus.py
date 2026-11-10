@@ -1226,30 +1226,31 @@ class S3TUSUpload(TUSUpload):
             del uploads[uid]
 
     def process_blob(self, blob):
-        """Register the staging key with the S3 storage as a blob handoff.
+        """Hand the staging key to the S3 storage as the blob's content.
 
-        Mirrors the original implementation: write a tiny diagnostic marker,
-        rename it into ``_p_blob_uncommitted``, and tell the storage which
-        S3 key the blob's bytes actually live at.
+        Writes zodb-s3blobs' staged-upload marker into
+        ``_p_blob_uncommitted``. At commit the storage recognises the marker
+        by its content and copies the staging key to the blob's key
+        server-side, instead of uploading the file.
         """
+        from zodb_s3blobs.storage import write_staged_marker
+
         if self._s3_storage is None:
             raise RuntimeError("S3TUSUpload missing storage reference at handoff")
         size = self.length()
         entry = self._entry()
         staging_key = entry.get("staging_key")
-        marker_content = f"S3BLOB-STAGED\n{staging_key}\n{size}\n".encode()
         # Use a uniquely-named tempfile so two concurrent uploads in the same
         # process never race on the marker source path.
         fd, marker_source = mkstemp(prefix="tus-marker-", suffix=".bin")
+        os.close(fd)
         try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(marker_content)
+            write_staged_marker(marker_source, staging_key, size)
             target_path = blob._p_blob_uncommitted
             rename_or_copy_blob(marker_source, target_path)
         finally:
             if os.path.exists(marker_source):
                 os.remove(marker_source)
-        self._s3_storage.register_staged_s3_key(target_path, staging_key, size)
         self._handoff_done = True
         logger.info(
             "TUS/S3: handoff complete uid=%s staging_key=%s size=%d "
